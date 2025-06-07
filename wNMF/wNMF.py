@@ -64,9 +64,9 @@ class wNMF:
         One vector is generated per run and tracks the performace of that fitting run over time. By default this is false
         as it can slow down the overall fitting, and is primarily useful for diagnostics
 
-    verbose : integer --> (0, 1) default 1
+    verbose : integer --> (0, 1, 2) default 1
         The level of verbosity. If 1 is provided, reports n_features, n_samples, and n_components, as well as the current
-        error every 100 iterations.
+        error every 100 iterations. verbose=2 gives output at each iteration.
 
 
     Returns
@@ -312,9 +312,9 @@ class wNMF:
             )
 
         ## check verbose is int
-        if self.verbose != 0 and self.verbose != 1:
+        if self.verbose not in (0, 1, 2):
             raise ValueError(
-                f"Verbosity is specified with an it, 0 or 1; got '{self.verbose}', of type {type(self.verbose)}"
+                f"Verbosity is specified with an it, 0 or 1 or 2; got '{self.verbose}', of type {type(self.verbose)}"
             )
 
     def fit(self, X: np.ndarray, W: np.ndarray, n_run: int = 1):
@@ -396,16 +396,16 @@ class wNMF:
 
         ## Begin Runs...
         for r in range(0, n_run):
-            if self.verbose == 1:
+            if self.verbose >= 1:
                 print(f"Beginning Run {r + 1}...")
 
             ## Generate random initializatoins of U,V using random number generator
-            if self.verbose == 1:
+            if self.verbose >= 1:
                 print("|--- Initializing U,V")
             U, V = self.initialize_u_v(rng, n_features, n_samples, mean)
 
             ## Factorize X into U,V given W
-            if self.verbose == 1:
+            if self.verbose >= 1:
                 print("|--- Running wNMF")
 
             if self.beta_loss == "frobenius":
@@ -416,7 +416,7 @@ class wNMF:
 
             ## Rescale the columns of U (basis vectors) if needed
             if self.rescale == True:
-                if self.verbose == 1:
+                if self.verbose >= 1:
                     print("|--- Rescaling U basis vectors")
 
                 factorized[0] = factorized[0] / np.sum(factorized[0], 0)
@@ -424,7 +424,7 @@ class wNMF:
             ## append the result and store it
             result.append(factorized)
 
-            if self.verbose == 1:
+            if self.verbose >= 1:
                 print("|--- Completed")
 
         ## transform the result from a list of tuples to a set of lists, each with multiple individual entries
