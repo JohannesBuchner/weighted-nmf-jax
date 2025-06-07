@@ -21,6 +21,76 @@ Weighted NMF:
 """
 
 import numpy as np
+import jax.numpy as jnp
+import jax
+
+
+@jax.jit
+def update_uv_batch_euclidean(A, U, V, W, epsmin, m):
+    """Perform 10 weighted NMF iterations for a euclidean metric."""
+    # Ensure strictly positive U, V to avoid division by zero
+    U = jnp.where(U == 0.0, epsmin, U)
+    V = jnp.where(V == 0.0, epsmin, V)
+
+    # Compute row-wise reconstruction error
+    """
+    if m > 0:
+        W_mask = jnp.ones_like(W)
+        row_errors = jnp.sum(W * (A - U @ V)**2, axis=1)  # shape (n_rows,)
+        _, worst_idx = jax.lax.top_k(row_errors, m)
+
+        # Row mask: 1 for good rows, 0 for bad
+        W_mask = W_mask.at[worst_idx, :].set(0.0)
+
+        # Apply mask once and reuse for all 10 iterations
+        W_masked = W * W_mask
+    else:
+    """
+    W_masked = W
+
+    def step_fn(carry, _):
+        U, V = carry
+
+        # Update V
+        V_num = U.T @ (W_masked * A)
+        V_denom = U.T @ (W_masked * (U @ V)) + epsmin
+        V_new = V * (V_num / V_denom)
+
+        # Update U
+        UV = U @ V_new
+        U_num = (W_masked * A) @ V_new.T
+        U_denom = (W_masked * UV) @ V_new.T + epsmin
+        U_new = U * (U_num / U_denom)
+
+        return (U_new, V_new), None
+
+    # Run 10 iterations of updates
+    (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=10)
+    return U_out, V_out
+
+@jax.jit
+def update_uv_batch_kullback_leibler(A, U, V, W, epsmin, m):
+    """Perform 10 weighted NMF iterations for a euclidean metric."""
+    # Ensure strictly positive U, V to avoid division by zero
+    U = jnp.where(U == 0.0, epsmin, U)
+    V = jnp.where(V == 0.0, epsmin, V)
+
+    W_masked = W
+
+    def step_fn(carry, _):
+        U, V = carry
+
+        # Update V
+        V_new = V * ((U.T @ (W_masked * A)) / ((U.T @ (W_masked * (U @ V)))))
+
+        # Update U
+        U_new = U * (((W * A) @ V.T) / (((W * (U @ V)) @ V.T)))
+
+        return (U_new, V_new), None
+
+    # Run 10 iterations of updates
+    (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=10)
+    return U_out, V_out
 
 
 class wNMF:
