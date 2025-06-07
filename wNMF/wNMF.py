@@ -542,20 +542,13 @@ class wNMF:
         epsmin = self.epsmin
         err_stored = np.zeros(self.max_iter)
         ## Begin iterations until max_iter
-        for i in range(0, self.max_iter):
-            ## Every 10 iterations conver zeroes to epsmin to prevent divide by zero error
-            if i % 10 == 0:
-                V[V == 0] = epsmin
-                U[U == 0] = epsmin
+        for i in range(0, int(np.ceil(self.max_iter / 10))):
+            if self.verbose > 1:
+                print(f"|--- iteration {i * 10}")
+            U, V = update_uv_batch_euclidean(A, U, V, W, epsmin, m=0)
 
-            ## If enabled, track errors using the Euclidean Norm loss function
             if self.track_error:
-                err_stored[i] = self.calculate_reconstruction_error(A, U, V, W)
-
-            ## update V
-            V = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
-            ## update U
-            U = U * (((W * A) @ V.T) / ((W * (U @ V)) @ V.T))
+                err_stored[i * 10 :] = self.calculate_reconstruction_error(A, U, V, W)
 
         ## Calculate final reconstruction error
         err = self.calculate_reconstruction_error(A, U, V, W)
@@ -606,20 +599,14 @@ class wNMF:
         epsmin = self.epsmin
         err_stored = np.zeros(self.max_iter)
         ## Begin iterations until max_iter
-        for i in range(0, self.max_iter):
-            ## Every 10 iterations conver zeroes to epsmin to prevent divide by zero error
-            if i % 10 == 0:
-                V[V == 0] = epsmin
-                U[U == 0] = epsmin
+        for i in range(0, int(np.ceil(self.max_iter / 10))):
+            if self.verbose > 1:
+                print(f"|--- iteration {i * 10}")
+            U, V = update_uv_batch_kullback_leibler(A, U, V, W, epsmin, m=0)
 
-            ## If enabled, track errors using KL-divergence loss function
             if self.track_error:
-                err_stored[i] = self.calculate_reconstruction_error(A, U, V, W)
+                err_stored[i * 10 :] = self.calculate_reconstruction_error(A, U, V, W)
 
-            ## Update V
-            V = ((V) / (U.T @ W)) * (U.T @ ((W * A) / (U @ V)))
-            ## Update U
-            U = ((U) / (W @ V.T)) * (((W * A) / (U @ V)) @ V.T)
 
         ## Calculate final reconstruction error
         err = self.calculate_reconstruction_error(A, U, V, W)
@@ -759,7 +746,7 @@ class wNMF:
         V[V == 0] = self.epsmin
         U[U == 0] = self.epsmin
 
-        return U, V
+        return jnp.array(U), jnp.array(V)
 
     def calculate_reconstruction_error(
         self, X: np.ndarray, U: np.ndarray, V: np.ndarray, W: np.ndarray
@@ -789,8 +776,8 @@ class wNMF:
         """
 
         ## Replace zeroes with epsmin to prevent divide by zero / log(0) errors
-        V[V == 0] = self.epsmin
-        U[U == 0] = self.epsmin
+        U = jnp.where(U == 0.0, self.epsmin, U)
+        V = jnp.where(V == 0.0, self.epsmin, V)
 
         ## select loss function and calculate error
         if self.beta_loss == "frobenius":
