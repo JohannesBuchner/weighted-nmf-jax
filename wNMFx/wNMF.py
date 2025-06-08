@@ -304,9 +304,6 @@ class wNMF:
         If the relative error is found to change less than this amount after 20 iterations, or alternativley increase
         then minimization is completed.
 
-    frac_outliers : float, default 0
-        A fraction of the worst reconstructioned samples is excluded from each fitting iteration.
-
     random_state : int default 12345
         Specifies a seed value to initilaize the numpy random number generator. Defaults to 12345
 
@@ -337,7 +334,6 @@ class wNMF:
         beta_loss: str = "frobenius",
         max_iter: int = 1000,
         tol: float = 1e-4,
-        frac_outliers: float = 0.0,
         random_state: int = 12345,
         rescale: bool = False,
         track_error: bool = False,
@@ -350,7 +346,6 @@ class wNMF:
         self.beta_loss = beta_loss
         self.max_iter = max_iter
         self.tol = tol
-        self.frac_outliers = frac_outliers
         self.random_state = random_state
         self.rescale = rescale
         self.track_error = track_error
@@ -436,15 +431,6 @@ class wNMF:
         if not isinstance(self.tol, float) or self.tol <= 0:
             raise ValueError(
                 f"Error convergence criteria must be a positive float greater than zero; got '{self.tol}', of type {type(self.tol)}"
-            )
-
-        if (
-            not isinstance(self.frac_outliers, float)
-            or not self.frac_outliers >= 0
-            or not self.frac_outliers < 1
-        ):
-            raise ValueError(
-                f"Outlier fraction must be a positive float between 0 and 1; got '{self.frac_outliers}', of type {type(self.frac_outliers)}"
             )
 
         # check random_state is int > 0
@@ -763,24 +749,12 @@ class wNMF:
         """
         epsmin = self.epsmin
         err_stored = np.zeros(self.max_iter)
-        m = int(np.ceil(self.frac_outliers * A.shape[1]))
         # Begin iterations until max_iter
         for i in range(0, int(np.ceil(self.max_iter / 10))):
             if self.verbose > 1:
                 print(f"|--- iteration {i * 10}")
-            if m > 0:
-                # find m worst reconstructions and exclude them
-                W_mask = np.ones_like(W)
-                row_errors = calculate_reconstruction_error_frobenius(
-                    A, U, V, W, axis=1, epsmin=self.epsmin
-                )
-                worst_idx = np.argpartition(row_errors, -m)[-m:]
-                W_mask[worst_idx] = 0.0
-                W_masked = W * W_mask
-            else:
-                W_masked = W
 
-            U, V = update_uv_batch_frobenius(A, U, V, W_masked, epsmin)
+            U, V = update_uv_batch_frobenius(A, U, V, W, epsmin)
 
             if self.track_error:
                 err_stored[i * 10:] = calculate_reconstruction_error_frobenius(
@@ -832,25 +806,12 @@ class wNMF:
         """
         epsmin = self.epsmin
         err_stored = np.zeros(self.max_iter)
-        m = int(np.ceil(self.frac_outliers * A.shape[1]))
         # Begin iterations until max_iter
         for i in range(0, int(np.ceil(self.max_iter / 10))):
             if self.verbose > 1:
                 print(f"|--- iteration {i * 10}")
 
-            if m > 0:
-                # find m worst reconstructions and exclude them
-                W_mask = np.ones_like(W)
-                row_errors = calculate_reconstruction_error_kullback_leibler(
-                    A, U, V, W, axis=1, epsmin=self.epsmin
-                )
-                worst_idx = np.argpartition(row_errors, -m)[-m:]
-                W_mask[worst_idx] = 0.0
-                W_masked = W * W_mask
-            else:
-                W_masked = W
-
-            U, V = update_uv_batch_kullback_leibler(A, U, V, W_masked, epsmin=epsmin)
+            U, V = update_uv_batch_kullback_leibler(A, U, V, W, epsmin=epsmin)
 
             if self.track_error:
                 err_stored[i * 10:] = calculate_reconstruction_error_kullback_leibler(
