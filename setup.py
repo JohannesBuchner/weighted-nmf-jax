@@ -5,7 +5,7 @@ from os import path
 
 # Open README
 here = path.abspath(path.dirname(__file__))
-readme_path = path.join(here, "README.md")
+readme_path = path.join(here, "README.rst")
 with open(readme_path, "r") as f:
     readme = f.read()
 
@@ -14,7 +14,7 @@ setuptools.setup(
     version="0.2.0",
     long_description=readme,
     description="wNMFx: weighted Non-Negative matrix Factorization in jax",
-    long_description_content_type="text/rst",
+    long_description_content_type="text/x-rst",
     author="JohannesBuchner",
     author_email="johannes.buchner.acad@gmx.com",
     url="https://github.com/JohannesBuchner/weighted-nmf-jax",
