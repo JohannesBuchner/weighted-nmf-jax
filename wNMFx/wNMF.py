@@ -1,6 +1,6 @@
-"""
-Non-negative matrix factorization (NMF) using the "Weighted-NMF" algorithim (wNMF).
-See "Weighted Nonnegative Matrix Factorization and Face Feature Extraction", Blondel, Ho and Dooren 2007
+"""Weighted Non-negative matrix factorization (NMF).
+
+See "Weighted Nonnegative Matrix Factorization and Face Feature Extraction", Blondel, Ho and Dooren 2007.
 
 NMF decomposes a matrix X into two matrices U,V with a shared internal dimension, representing a reduced-dimension
 latent space.
@@ -121,7 +121,6 @@ def calculate_reconstruction_error_kullback_leibler(
     ------
     err: the estimated error using the selected loss function
     """
-
     # Replace zeroes with epsmin to prevent divide by zero / log(0) errors
     U = jnp.where(U == 0.0, epsmin, U)
     V = jnp.where(V == 0.0, epsmin, V)
@@ -160,10 +159,6 @@ def update_uv_batch_frobenius(A, U, V, W, epsmin):
     V : numpy.ndarray, values > 0 (n_components, n_samples)
         V matrix
     """
-    # Ensure strictly positive U, V to avoid division by zero
-    U = jnp.where(U == 0.0, epsmin, U)
-    V = jnp.where(V == 0.0, epsmin, V)
-
     # Compute row-wise reconstruction error
     def step_fn(carry, _):
         U, V = carry
@@ -172,13 +167,16 @@ def update_uv_batch_frobenius(A, U, V, W, epsmin):
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
 
         # Update U
-        UV = U @ V_new
-        U_new = U * (((W * A) @ V_new.T) / ((W * UV) @ V_new.T))
+        U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
 
         return (U_new, V_new), None
 
     # Run 10 iterations of updates
     (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=10)
+
+    # Ensure strictly positive U, V to avoid division by zero
+    U_out = jnp.where(U_out == 0.0, epsmin, U_out)
+    V_out = jnp.where(V_out == 0.0, epsmin, V_out)
 
     norms = U_out.max(axis=0)
     assert norms.shape == (U_out.shape[1],)
@@ -215,10 +213,6 @@ def update_uv_batch_kullback_leibler(A, U, V, W, epsmin):
     V : numpy.ndarray, values > 0 (n_components, n_samples)
         V matrix
     """
-    # Ensure strictly positive U, V to avoid division by zero
-    U = jnp.where(U == 0.0, epsmin, U)
-    V = jnp.where(V == 0.0, epsmin, V)
-
     def step_fn(carry, _):
         U, V = carry
 
@@ -232,6 +226,10 @@ def update_uv_batch_kullback_leibler(A, U, V, W, epsmin):
 
     # Run 10 iterations of updates
     (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=10)
+
+    # Ensure strictly positive U, V to avoid division by zero
+    U_out = jnp.where(U_out == 0.0, epsmin, U_out)
+    V_out = jnp.where(V_out == 0.0, epsmin, V_out)
 
     norms = U_out.max(axis=0)
     assert norms.shape == (U_out.shape[1],)
@@ -385,11 +383,11 @@ class wNMF:
         self._check_init()
 
     def __repr__(self):
-        return f"wNMF Model with {self.n_components} Components"
+        """Get string representation."""
+        return f"wNMF model with {self.n_components} components"
 
     def _check_init(self):
-        """
-        Function to check the values supplied during wNMF initialization for various run parameters.
+        """Check the parameters supplied during initialization.
 
         Parameters checked : expected values
             n_components  : int, greater than 0
@@ -474,7 +472,6 @@ class wNMF:
 
         Attributes
         ----------
-
         U : numpy.ndarray, shape (n_features, n_components)
             The basis matrix for the reduced dimension latent space. Columns of U are basis vectors that can be
             added with different weights to yield a sample from X (columns).
@@ -493,7 +490,6 @@ class wNMF:
 
         Scikit-learn-like API
         ---------------------
-
         This information can be accessed from the following variables, to mimic the SKlearn API
 
             U : self.components_
@@ -574,7 +570,6 @@ class wNMF:
 
         Params
         ------
-
         X : numpy.ndarray or coercible array-like object
             A data matrix to be factorized, with dimensions (n_samples, n_features).
 
@@ -588,7 +583,6 @@ class wNMF:
         self: object
             fit object, with added variables
         """
-
         # Set the minimal value (that masks 0's) to be the smallest
         # step size for the data-type in matrix X.
         self.epsmin = np.finfo(type(X[0, 0])).eps
@@ -682,7 +676,8 @@ class wNMF:
         return self
 
     def fit_transform(self, X: np.ndarray, W: np.ndarray):
-        """
+        """Fit and transform data.
+
         Implements the fit_transform functionality from the SKlearn model API. Fits an NMF model to the
         data matrix X, and weight matrix W. Determines the best solution U,V over n_run's. The data-matrix
         is then "transformed" into its latent space coefficients given by the matrix V, or coefficients_.
@@ -701,7 +696,6 @@ class wNMF:
         ------
         f.coefficients : numpy.ndarray
             The best fit matrix V, or coefficients_ in SKlearn API language
-
         """
         f = self.fit(X, W)
 
@@ -753,13 +747,11 @@ class wNMF:
         for i in range(0, int(np.ceil(self.max_iter / 10))):
             if self.verbose > 1:
                 print(f"|--- iteration {i * 10}")
-
-            U, V = update_uv_batch_frobenius(A, U, V, W, epsmin)
-
             if self.track_error:
                 err_stored[i * 10:] = calculate_reconstruction_error_frobenius(
                     A, U, V, W, epsmin=self.epsmin
                 )
+            U, V = update_uv_batch_frobenius(A, U, V, W, epsmin)
 
         # Calculate final reconstruction error
         err = calculate_reconstruction_error_frobenius(A, U, V, W, epsmin=self.epsmin)
@@ -810,13 +802,11 @@ class wNMF:
         for i in range(0, int(np.ceil(self.max_iter / 10))):
             if self.verbose > 1:
                 print(f"|--- iteration {i * 10}")
-
-            U, V = update_uv_batch_kullback_leibler(A, U, V, W, epsmin=epsmin)
-
             if self.track_error:
                 err_stored[i * 10:] = calculate_reconstruction_error_kullback_leibler(
                     A, U, V, W, epsmin=self.epsmin
                 )
+            U, V = update_uv_batch_kullback_leibler(A, U, V, W, epsmin=epsmin)
 
         # Calculate final reconstruction error
         err = calculate_reconstruction_error_kullback_leibler(
@@ -825,15 +815,13 @@ class wNMF:
         return U, V, i, err, err_stored
 
     def _check_x_w(self, X: np.ndarray, W: np.ndarray):
-        """
-        Function to check the whether supplied X and W are suitable for NMF
+        """Check whether supplied X and W are suitable for NMF.
 
            Conditions checked : expected values
             X.shape, W.shape  : shapes / dimensions should be equal
                 entries in X  : greater than or equal to 0, no NaNs
                 entries in W  : greater than or equal to 0, no NaNs
         X.shape, n_components : n_components < n_samples in X
-
         """
         # check X and W are the same shape
         if X.shape != W.shape:
@@ -864,8 +852,7 @@ class wNMF:
             )
 
     def init_random_generator(self):
-        """
-        Function to initialize a numpy random number generator
+        """Initialize pseudo-random number generator.
 
         Params:
         -------
@@ -889,8 +876,9 @@ class wNMF:
         mean: float,
         X: np.ndarray,
     ):
-        """
-        Function to randomly initialize U and V. U and V are initialized randomly but scaled to the mean
+        """Initialize U and V.
+
+        U and V are initialized randomly but scaled to the mean
         of X divided by n_components.
 
         Params:
@@ -933,10 +921,9 @@ class wNMF:
 
             pca = PCA(self.n_components)
             V = pca.fit_transform(X.T).T
-            U = (
-                pca.components_
-                - np.clip(pca.components_.min(axis=1, keepdims=True), None, 0)
-            ).T
+            # any negative values? move the component up to make them zero
+            low = np.clip(pca.components_.min(axis=1, keepdims=True), None, 0)
+            U = (pca.components_ - low).T
             norms = U.max(axis=0)
             U /= norms
             V *= norms.reshape((-1, 1))

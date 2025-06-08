@@ -7,7 +7,7 @@ def test_random(plot=False):
     n = 101
     features = 100
     components = 4
-    n_run = 20
+    n_run = 10
     max_iter = 4000
     np.random.seed(123)
     
@@ -20,7 +20,7 @@ def test_random(plot=False):
         plt.savefig('test_normal_input.pdf')
         plt.close()
 
-    X = np.abs(np.random.normal(1 * (10**np.random.uniform(-1, 1, size=(n, components)) @ shapes_true), 1))
+    X = np.abs(np.random.normal(10 * (10**np.random.uniform(-1, 1, size=(n, components)) @ shapes_true), 1))
     assert X.shape == (n, features)
     W = np.ones_like(X)
     if plot:
@@ -30,7 +30,7 @@ def test_random(plot=False):
         fig_components, ax_components = plt.subplots()
         fig_loss, ax_loss = plt.subplots()
 
-    for init, ls in ('random', '-'), :#('sample', '--'):
+    for i, (init, ls) in enumerate([('random', '-'), ('sample', '--'), ('PCA', ':'), ('logAR1', ':')]):
         model = wNMF(
             n_components=components, beta_loss='frobenius', 
             max_iter=max_iter, track_error=True, verbose=1, init=init, 
@@ -46,10 +46,12 @@ def test_random(plot=False):
         assert len(fit.error_tracker[0]) == max_iter
 
         if plot:
-            ax_components.plot(fit.U, ls=ls)
+            ax_components.plot(i + fit.U, ls=ls)
+            color = None
             for i, err_tracked in enumerate(fit.error_tracker):
-                ax_loss.plot(err_tracked, label=f'run {i} init {init}',
-                ls=ls)
+                l, = ax_loss.plot(err_tracked, color=color,
+                    label=f'run {i} init {init}' if color is None else None, ls=ls)
+                color = l.get_color()
 
     if plot:
         fig_components.savefig('test_normal.pdf')
@@ -82,7 +84,7 @@ def test_poisson(plot=False):
         plt.close()
 
     ## An example on simulated data
-    X = 1. * np.random.poisson(10 * (10**np.random.uniform(-4, 2, size=(n, components))) @ shapes_true)
+    X = 1. * np.random.poisson(100 * (10**np.random.uniform(-4, 2, size=(n, components))) @ shapes_true)
     W = np.ones_like(X)
     assert X.shape == (n, features)
     if plot:
@@ -92,7 +94,7 @@ def test_poisson(plot=False):
         fig_components, ax_components = plt.subplots()
         fig_loss, ax_loss = plt.subplots()
 
-    for init, ls in ('random', '-'),:# , ('sample', '--'):
+    for i, (init, ls) in enumerate([('random', '-'), ('sample', '--'), ('PCA', ':'), ('logAR1', ':')]):
         model = wNMF(
             n_components=components, beta_loss='kullback-leibler', 
             max_iter=max_iter, track_error=True, verbose=1, init=init, 
@@ -108,10 +110,12 @@ def test_poisson(plot=False):
         assert len(fit.error_tracker[0]) == max_iter
 
         if plot:
-            ax_components.plot(fit.U, ls=ls)
+            ax_components.plot(i + fit.U, ls=ls)
+            color = None
             for i, err_tracked in enumerate(fit.error_tracker):
-                ax_loss.plot(err_tracked, label=f'run {i} init {init}',
-                ls=ls)
+                l, = ax_loss.plot(err_tracked, color=color,
+                    label=f'run {i} init {init}' if color is None else None, ls=ls)
+                color = l.get_color()
 
     if plot:
         fig_components.savefig('test_poisson.pdf')
@@ -126,5 +130,5 @@ if __name__ == '__main__':
     import sys
     if sys.argv[1] == 'poisson':
         test_poisson(plot=True)
-    else:
+    elif sys.argv[1] == 'normal':
         test_random(plot=True)
