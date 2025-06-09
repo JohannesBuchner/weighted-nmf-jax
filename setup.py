@@ -21,7 +21,7 @@ setuptools.setup(
     license="MIT License",
     packages=["wNMFx"],
     python_requires=">=3.6",
-    install_requires="numpy>=1.13",
+    install_requires=["numpy>=1.13", "jax"],
     include_package_data=False,
     classifiers=[
         "Programming Language :: Python",
