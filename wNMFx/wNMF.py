@@ -61,7 +61,7 @@ def calculate_reconstruction_error_frobenius(
     V: np.ndarray,
     W: np.ndarray,
     epsmin: float,
-    axis: int | None = None,
+    axis=None,
 ):
     """Calculate the reconstruction error of U, V to X, given W.
 
@@ -99,7 +99,7 @@ def calculate_reconstruction_error_kullback_leibler(
     V: np.ndarray,
     W: np.ndarray,
     epsmin: float,
-    axis: int | None = None,
+    axis=None,
 ):
     """Calculate the reconstruction error of U, V to X, given W.
 
