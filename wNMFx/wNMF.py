@@ -743,14 +743,27 @@ class wNMF:
         """
         epsmin = self.epsmin
         err_stored = np.zeros(self.max_iter)
+        prev_err = None
+        if self.tol > 0:
+            init_err = calculate_reconstruction_error_kullback_leibler(
+                A, U, V, W, epsmin=self.epsmin
+            )
         # Begin iterations until max_iter
         for i in range(0, int(np.ceil(self.max_iter / 10))):
             if self.verbose > 1:
                 print(f"|--- iteration {i * 10}")
-            if self.track_error:
-                err_stored[i * 10:] = calculate_reconstruction_error_frobenius(
+            if self.track_error or self.tol > 0:
+                curr_err = calculate_reconstruction_error_frobenius(
                     A, U, V, W, epsmin=self.epsmin
                 )
+                if self.track_error:
+                    err_stored[i * 10:] = curr_err
+                if self.tol > 0 and prev_err is not None and (prev_err - curr_err) / init_err < self.tol:
+                    print(f'|--- Convergence reached at iteration {i}')
+                    break
+                del prev_err
+                prev_err = curr_err
+
             U, V = update_uv_batch_frobenius(A, U, V, W, epsmin)
 
         # Calculate final reconstruction error
@@ -798,14 +811,27 @@ class wNMF:
         """
         epsmin = self.epsmin
         err_stored = np.zeros(self.max_iter)
+        prev_err = None
+        if self.tol > 0:
+            init_err = calculate_reconstruction_error_kullback_leibler(
+                A, U, V, W, epsmin=self.epsmin
+            )
         # Begin iterations until max_iter
         for i in range(0, int(np.ceil(self.max_iter / 10))):
             if self.verbose > 1:
                 print(f"|--- iteration {i * 10}")
-            if self.track_error:
-                err_stored[i * 10:] = calculate_reconstruction_error_kullback_leibler(
+            if self.track_error or self.tol > 0:
+                curr_err = calculate_reconstruction_error_kullback_leibler(
                     A, U, V, W, epsmin=self.epsmin
                 )
+                if self.track_error:
+                    err_stored[i * 10:] = curr_err
+                if self.tol > 0 and prev_err is not None and (prev_err - curr_err) / init_err < self.tol:
+                    print(f'|--- Convergence reached at iteration {i}')
+                    break
+                del prev_err
+                prev_err = curr_err
+
             U, V = update_uv_batch_kullback_leibler(A, U, V, W, epsmin=epsmin)
 
         # Calculate final reconstruction error
