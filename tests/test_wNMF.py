@@ -1,6 +1,8 @@
 import numpy as np
 from wNMFx import wNMF
 import matplotlib.pyplot as plt
+from numpy.testing import assert_allclose
+
 
 def test_random(plot=False):
     ## An example on simulated data
@@ -52,6 +54,11 @@ def test_random(plot=False):
                 l, = ax_loss.plot(err_tracked, color=color,
                     label=f'run {i} init {init}' if color is None else None, ls=ls)
                 color = l.get_color()
+
+        model.tol = 0
+        V = model.transform(X=X, W=W)
+        V2 = model.transform(X=X * 100, W=W / 100**2)
+        assert_allclose(V * 100, V2, rtol=0.01)
 
     if plot:
         fig_components.savefig('test_normal.pdf')

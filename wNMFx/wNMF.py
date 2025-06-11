@@ -15,7 +15,7 @@ Weighted NMF:
     each sample (column) of the data matrix X, such that W ⊗ X = UV, where ⊗ is the Hadamard product of W and X.
     To determine U and V, given W and X, the authors develop a variation of the Multiplicative Update algorithim
     proposed by (Lee, 1999) and (Lee, 2001) to minimize the Kubllback-Leibler divergence, or,
-    alternatively the Frobenius Norm. Variants of algorithims to solve the weighted-NMF problem by minimizing both
+    alternatively the Frobenius Norm. Variants of algorithms to solve the weighted-NMF problem by minimizing both
     KL-divergence and the Frobenius Norm are provided. See, reference.
 
 """
@@ -235,6 +235,165 @@ def update_uv_batch_kullback_leibler(A, U, V, W, epsmin):
     assert norms.shape == (U_out.shape[1],)
 
     return U_out / norms.reshape((1, -1)), V_out * norms.reshape((-1, 1))
+
+
+@jax.jit
+def update_v_batch_frobenius(A, U, V, W, epsmin):
+    """Perform 10 weighted NMF iterations for a Frobenius metric.
+
+    Only V is updated.
+
+    Params:
+    ------
+    A : numpy.ndarray, values > 0, (n_features, n_samples)
+        Data matrix to be factorized / compared to
+
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix
+
+    W : numpy.ndarray, values > 0 (n_features, n_samples)
+        Weight matrix, weighting importance of each feature in each sample, for all samples in X
+
+    epsmin: float
+        Smallest non-zero float value.
+
+    Returns:
+    ------
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix
+    """
+    # Compute row-wise reconstruction error
+    def step_fn(V, _):
+        V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+        return (V_new), None
+
+    # Run 10 iterations of updates
+    V_out, _ = jax.lax.scan(step_fn, V, None, length=10)
+
+    # Ensure strictly positive U, V to avoid division by zero
+    V_out = jnp.where(V_out == 0.0, epsmin, V_out)
+
+    return U, V_out
+
+
+@jax.jit
+def update_v_batch_kullback_leibler(A, U, V, W, epsmin):
+    """Perform 10 weighted NMF iterations for a euclidean metric.
+
+    Only V is updated.
+
+    Params:
+    ------
+    A : numpy.ndarray, values > 0, (n_features, n_samples)
+        Data matrix to be factorized / compared to
+
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix
+
+    W : numpy.ndarray, values > 0 (n_features, n_samples)
+        Weight matrix, weighting importance of each feature in each sample, for all samples in X
+
+    epsmin: float
+        Smallest non-zero float value.
+
+    Returns:
+    ------
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix
+    """
+    def step_fn(V, _):
+        V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+        return V_new, None
+
+    # Run 10 iterations of updates
+    V_out, _ = jax.lax.scan(step_fn, V, None, length=10)
+    V_out = jnp.where(V_out == 0.0, epsmin, V_out)
+    return U, V_out
+
+
+def iterate_UV(
+    A: np.ndarray, U: np.ndarray, V: np.ndarray, W: np.ndarray,
+    epsmin: float, max_iter: int, tol: float,
+    verbose: int, track_error: bool,
+    calculate_reconstruction_error_func,
+    update_uv_batch_func
+):
+    """Minimize the objective iteratively.
+
+    Params:
+    -------
+    A : numpy.ndarray, values > 0, (n_features, n_samples)
+        Data matrix to be factorized, referred to as X in the main code body, referred to as A here to make it easier to
+        read the update steps because the authors Blondel, Ho, Ngoc-Diep and Dooren use A.
+
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix, randomly initialized entries.
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix, randomly initialized entries.
+
+    W : numpy.ndarray, values > 0 (n_features, n_samples)
+        Weight matrix, weighting importance of each feature in each sample, for all samples in X
+
+
+    Returns:
+    ------
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        Optimized version of the U-matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        Optimized version of the V-matrix
+
+    i : int
+        The iteration at which the minimization procedure terminated
+
+    err : float
+        The final error between the reconstruction UV and the actual values of W ⊗ X
+
+    err_stored : numpy.ndarray
+        A numpy vector containing the estimated reconstruction error at each minimization step
+        if self.track_error is True, otherwise an empty array of zeroes.
+
+    """
+    err_stored = np.zeros(max_iter)
+    prev_err = None
+    if tol > 0:
+        init_err = calculate_reconstruction_error_func(
+            A, U, V, W, epsmin=epsmin
+        )
+    # Begin iterations until max_iter
+    for i in range(0, int(np.ceil(max_iter / 10))):
+        if verbose > 1:
+            print(f"|--- iteration {i * 10}")
+        if track_error or tol > 0:
+            curr_err = calculate_reconstruction_error_func(
+                A, U, V, W, epsmin=epsmin
+            )
+            if track_error:
+                err_stored[i * 10:] = curr_err
+            if tol > 0 and prev_err is not None and (prev_err - curr_err) / init_err < tol:
+                print(f'|--- Convergence reached at iteration {i}')
+                break
+            del prev_err
+            prev_err = curr_err
+
+        U, V = update_uv_batch_func(A, U, V, W, epsmin)
+
+    # Calculate final reconstruction error
+    err = calculate_reconstruction_error_func(A, U, V, W, epsmin=epsmin)
+    return U, V, i, err, err_stored
 
 
 class wNMF:
@@ -500,7 +659,7 @@ class wNMF:
 
 
             V : self.coefficients_
-            |    The matrix V from the best  run, with dimensions (n_features, n_components)
+            |    The matrix V from the best  run, with dimensions (n_components, n_samples)
             |
             | : self.coefficients_all_
             |    A tuple of length n_runs, with each entry containing a matrix V from a single run.
@@ -619,10 +778,19 @@ class wNMF:
                 print("|--- Running wNMF")
 
             if self.beta_loss == "frobenius":
-                factorized = self.iterate_weighted_euclidean(X, U, V, W)
-
+                calculate_reconstruction_error_func = calculate_reconstruction_error_frobenius
+                update_uv_batch_func = update_uv_batch_frobenius
             elif self.beta_loss == "kullback-leibler":
-                factorized = self.iterate_weighted_kullback_leibler(X, U, V, W)
+                calculate_reconstruction_error_func = calculate_reconstruction_error_kullback_leibler
+                update_uv_batch_func = update_uv_batch_kullback_leibler
+
+            factorized = iterate_UV(
+                X, U, V, W,
+                epsmin=self.epsmin, max_iter=self.max_iter,
+                tol=self.tol, verbose=self.verbose, track_error=self.track_error,
+                calculate_reconstruction_error_func=calculate_reconstruction_error_func,
+                update_uv_batch_func=update_uv_batch_func,
+            )
 
             # Rescale the columns of U (basis vectors) if needed
             if self.rescale:
@@ -675,6 +843,81 @@ class wNMF:
         # return entire wNMF object
         return self
 
+    def transform(self, X: np.ndarray, W: np.ndarray):
+        """Transform with a fitted wNMF model.
+
+        Same as fit(), but only update V.
+
+        Params
+        ------
+        X : numpy.ndarray or coercible array-like object
+            A data matrix to be factorized, with dimensions (n_samples, n_features).
+
+        W : numpy.ndarray or coercible array-like object
+            A weight matrix of same dimension as X, which weights each entry in X. Generally expected
+            to be values ranging from 0 to 1, but can contain any non-negative entries.
+            If you have measurement errors, set W to the inverse variance.
+
+        Returns
+        -------
+        V: array
+            non-negative coefficients, of shape (n_samples, n_components)
+        """
+        # Set the minimal value (that masks 0's) to be the smallest
+        # step size for the data-type in matrix X.
+        self.epsmin = np.finfo(type(X[0, 0])).eps
+
+        # Try to coerce X and W to numpy arrays
+        X = coerce(X, self.epsmin).T
+        W = coerce(W, self.epsmin).T
+
+        # Check X and W are suitable for NMF
+        self._check_x_w(X, W)
+
+        # If passes, initialize random number generator using random_state
+        rng = self.init_random_generator()
+
+        # Extract relevant information from X
+        n_features, n_samples = X.shape
+        mean = np.mean(X)
+        U = self.U
+
+        if self.verbose >= 1:
+            print("Beginning transform...")
+
+        # Generate random initializatoins of U,V using random number generator
+        if self.verbose >= 1:
+            print("|--- Initializing V")
+        V = self.initialize_v(rng, n_features, n_samples, mean)
+
+        # Factorize X into U,V given W
+        if self.verbose >= 1:
+            print("|--- Running wNMF")
+
+        if self.beta_loss == "frobenius":
+            calculate_reconstruction_error_func = calculate_reconstruction_error_frobenius
+            update_uv_batch_func = update_v_batch_frobenius
+        elif self.beta_loss == "kullback-leibler":
+            calculate_reconstruction_error_func = calculate_reconstruction_error_kullback_leibler
+            update_uv_batch_func = update_v_batch_kullback_leibler
+
+        factorized = iterate_UV(
+            X, U, V, W,
+            epsmin=self.epsmin, max_iter=self.max_iter,
+            tol=self.tol, verbose=self.verbose, track_error=self.track_error,
+            calculate_reconstruction_error_func=calculate_reconstruction_error_func,
+            update_uv_batch_func=update_uv_batch_func,
+        )
+
+        if self.verbose >= 1:
+            print("|--- Completed")
+
+        # factorized[0] is U, which has not changed
+        self.coefficients_ = self.V = factorized[1]
+        self.n_iter = factorized[2]
+        self.err = factorized[3]
+        return self.coefficients_.T
+
     def fit_transform(self, X: np.ndarray, W: np.ndarray):
         """Fit and transform data.
 
@@ -700,145 +943,6 @@ class wNMF:
         f = self.fit(X, W)
 
         return f.coefficients_
-
-    def iterate_weighted_euclidean(
-        self, A: np.ndarray, U: np.ndarray, V: np.ndarray, W: np.ndarray
-    ):
-        """Minimize the Frobenius / Euclidean norm.
-
-        Params:
-        -------
-        A : numpy.ndarray, values > 0, (n_features, n_samples)
-            Data matrix to be factorized, referred to as X in the main code body, referred to as A here to make it easier to
-            read the update steps because the authors Blondel, Ho, Ngoc-Diep and Dooren use A.
-
-        U : numpy.ndarray, values > 0, (n_features,n_components)
-            U matrix, randomly initialized entries.
-
-        V : numpy.ndarray, values > 0 (n_components, n_samples)
-            V matrix, randomly initialized entries.
-
-        W : numpy.ndarray, values > 0 (n_features, n_samples)
-            Weight matrix, weighting importance of each feature in each sample, for all samples in X
-
-
-        Returns:
-        ------
-        U : numpy.ndarray, values > 0, (n_features,n_components)
-            Optimized version of the U-matrix
-
-        V : numpy.ndarray, values > 0 (n_components, n_samples)
-            Optimized version of the V-matrix
-
-        i : int
-            The iteration at which the minimization procedure terminated
-
-        err : float
-            The final error between the reconstruction UV and the actual values of W ⊗ X
-
-        err_stored : numpy.ndarray
-            A numpy vector containing the estimated reconstruction error at each minimization step
-            if self.track_error is True, otherwise an empty array of zeroes.
-
-        """
-        epsmin = self.epsmin
-        err_stored = np.zeros(self.max_iter)
-        prev_err = None
-        if self.tol > 0:
-            init_err = calculate_reconstruction_error_kullback_leibler(
-                A, U, V, W, epsmin=self.epsmin
-            )
-        # Begin iterations until max_iter
-        for i in range(0, int(np.ceil(self.max_iter / 10))):
-            if self.verbose > 1:
-                print(f"|--- iteration {i * 10}")
-            if self.track_error or self.tol > 0:
-                curr_err = calculate_reconstruction_error_frobenius(
-                    A, U, V, W, epsmin=self.epsmin
-                )
-                if self.track_error:
-                    err_stored[i * 10:] = curr_err
-                if self.tol > 0 and prev_err is not None and (prev_err - curr_err) / init_err < self.tol:
-                    print(f'|--- Convergence reached at iteration {i}')
-                    break
-                del prev_err
-                prev_err = curr_err
-
-            U, V = update_uv_batch_frobenius(A, U, V, W, epsmin)
-
-        # Calculate final reconstruction error
-        err = calculate_reconstruction_error_frobenius(A, U, V, W, epsmin=self.epsmin)
-        return U, V, i, err, err_stored
-
-    def iterate_weighted_kullback_leibler(
-        self, A: np.ndarray, U: np.ndarray, V: np.ndarray, W: np.ndarray
-    ):
-        """Minimize the Kullback-Leibler divergence.
-
-        Params:
-        -------
-        A : numpy.ndarray, values > 0, (n_features, n_samples)
-            Data matrix to be factorized, referred to as X in the main code body, referred to as A here to make it easier to
-            read the update steps because the authors Blondel, Ho, Ngoc-Diep and Dooren use A.
-
-        U : numpy.ndarray, values > 0, (n_features,n_components)
-            U matrix, randomly initialized entries.
-
-        V : numpy.ndarray, values > 0 (n_components, n_samples)
-            V matrix, randomly initialized entries.
-
-        W : numpy.ndarray, values > 0 (n_features, n_samples)
-            Weight matrix, weighting importance of each feature in each sample, for all samples in X
-
-
-        Returns:
-        ------
-        U : numpy.ndarray, values > 0, (n_features,n_components)
-            Optimized version of the U-matrix
-
-        V : numpy.ndarray, values > 0 (n_components, n_samples)
-            Optimized version of the V-matrix
-
-        i : int
-            The iteration at which the minimization procedure terminated
-
-        err : float
-            The final error between the reconstruction UV and the actual values of W ⊗ X
-
-        err_stored : numpy.ndarray
-            A numpy vector containing the estimated reconstruction error at each minimization step
-            if self.track_error is True, otherwise an empty array of zeroes.
-        """
-        epsmin = self.epsmin
-        err_stored = np.zeros(self.max_iter)
-        prev_err = None
-        if self.tol > 0:
-            init_err = calculate_reconstruction_error_kullback_leibler(
-                A, U, V, W, epsmin=self.epsmin
-            )
-        # Begin iterations until max_iter
-        for i in range(0, int(np.ceil(self.max_iter / 10))):
-            if self.verbose > 1:
-                print(f"|--- iteration {i * 10}")
-            if self.track_error or self.tol > 0:
-                curr_err = calculate_reconstruction_error_kullback_leibler(
-                    A, U, V, W, epsmin=self.epsmin
-                )
-                if self.track_error:
-                    err_stored[i * 10:] = curr_err
-                if self.tol > 0 and prev_err is not None and (prev_err - curr_err) / init_err < self.tol:
-                    print(f'|--- Convergence reached at iteration {i}')
-                    break
-                del prev_err
-                prev_err = curr_err
-
-            U, V = update_uv_batch_kullback_leibler(A, U, V, W, epsmin=epsmin)
-
-        # Calculate final reconstruction error
-        err = calculate_reconstruction_error_kullback_leibler(
-            A, U, V, W, epsmin=self.epsmin
-        )
-        return U, V, i, err, err_stored
 
     def _check_x_w(self, X: np.ndarray, W: np.ndarray):
         """Check whether supplied X and W are suitable for NMF.
@@ -998,3 +1102,45 @@ class wNMF:
         U[U == 0] = self.epsmin
 
         return jnp.array(U), jnp.array(V)
+
+    def initialize_v(
+        self,
+        random_number_generator: np.random.mtrand.RandomState,
+        n_features: int,
+        n_samples: int,
+        mean: float,
+    ):
+        """Initialize V.
+
+        V is initialized randomly but scaled to the mean
+        of X divided by n_components.
+
+        Params:
+        -------
+        random_number_generator : numpyp.random.RandomState
+            An initialized numpy random number generator with a set seed.
+
+        n_features : int
+            The number of features in X, or rows of X
+
+        n_samples : int
+            The number of samples in X, or columns of X
+
+        mean : float
+            Estimated mean over the entire data-set X, used for scaling initilization to approximately
+            similar range
+
+        Returns:
+        -------
+        U : numpy.ndarray
+            The matrix U, with randomly initialized entries
+
+        """
+        # estimate density by partitioning mean across components
+        est = np.sqrt(mean / self.n_components)
+
+        # generate entries of U/V using randn, scale by est
+        V = est * random_number_generator.randn(self.n_components, n_samples)
+        np.abs(V, V)
+        V[V == 0] = self.epsmin
+        return jnp.array(V)
