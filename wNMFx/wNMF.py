@@ -413,9 +413,10 @@ class wNMF:
         requires: X, W
         returns: self.coefficients_  - specifically the best version of V (lowest self.err) identified in n_run's
 
-    The other two methods, transform, and inverse transform do not make sense in the context of wNMF, as the
-    NMF model is fit with a specific weight matrix, and transforming the data with another weight matrix would not
-    be applicable. Hence, these methods are not implemented at the moment
+    transform(X, W):
+        description: Given a fitted NMF model, determines the coefficient matrix V.
+        requires: X, W
+        returns: self.coefficients_  - specifically the best version of V (lowest self.err)
 
     Examples
     --------
@@ -929,7 +930,6 @@ class wNMF:
         ------
         X : numpy.ndarray or coercible array-like object
             A data matrix to be factorized, with dimensions (n_features, n_samples).
-            NOTE this is differnt from the SKLearn API, which expects X to be (n_samples,n_features)
 
         W : numpy.ndarray or coercible array-like object
             A weight matrix of same dimension as X, which weights each entry in X. Generally expected
