@@ -13,7 +13,7 @@ to represent each sample in A as a linear combination of the basis vectors in U.
 Weighted NMF:
     Blondel, Ho and Dooren introduce a weight matrix W that pre-weights the importance of each feature (row) in
     each sample (column) of the data matrix X, such that W ⊗ X = UV, where ⊗ is the Hadamard product of W and X.
-    To determine U and V, given W and X, the authors develop a variation of the Multiplicative Update algorithim
+    To determine U and V, given W and X, the authors develop a variation of the Multiplicative Update algorithm
     proposed by (Lee, 1999) and (Lee, 2001) to minimize the Kubllback-Leibler divergence, or,
     alternatively the Frobenius Norm. Variants of algorithms to solve the weighted-NMF problem by minimizing both
     KL-divergence and the Frobenius Norm are provided. See, reference.
@@ -51,6 +51,29 @@ def coerce(matrix: np.ndarray, epsmin: float):
 
     # Convert 0 entries to epsmin to prevent underflow
     matrix[matrix == 0] = epsmin
+    return matrix
+
+
+def coerce_bool(matrix: np.ndarray):
+    """Coerce a matrix like object to a numpy.ndarray.
+
+    Used for converting R to suitable matrices.
+    Throws an error from numpy if the object provided is not coercible. No guarantees
+    are provided on what the coerced result looks like.
+
+    Params:
+    -------
+    matrix : a numpy.ndarray or any object that can be coerced to an array by numpy.ndarray
+        An object that is or can be coerced to a numpy.ndarray
+
+    Returns:
+    -------
+    matrix : numpy.ndarray
+        A coerced verision of the provided matrix
+    """
+    # test if object is a numpy.ndarray / ndarray
+    if not isinstance(matrix, np.ndarray):
+        matrix = np.array(matrix)
     return matrix
 
 
@@ -131,7 +154,7 @@ def calculate_reconstruction_error_kullback_leibler(
 
 
 @jax.jit
-def update_uv_batch_frobenius(A, U, V, W, epsmin):
+def update_uv_batch_frobenius(A, U, V, W, R, epsmin):
     """Perform 10 weighted NMF iterations for a Frobenius metric.
 
     Params:
@@ -148,6 +171,9 @@ def update_uv_batch_frobenius(A, U, V, W, epsmin):
     W : numpy.ndarray, values > 0 (n_features, n_samples)
         Weight matrix, weighting importance of each feature in each sample, for all samples in X
 
+    R : numpy.ndarray, bool (n_components, n_samples)
+        Activity matrix true if component is active for a sample
+
     epsmin: float
         Smallest non-zero float value.
 
@@ -159,6 +185,9 @@ def update_uv_batch_frobenius(A, U, V, W, epsmin):
     V : numpy.ndarray, values > 0 (n_components, n_samples)
         V matrix
     """
+    if R is not None:
+        V = np.where(R, V, 0)
+
     # Compute row-wise reconstruction error
     def step_fn(carry, _):
         U, V = carry
@@ -166,9 +195,11 @@ def update_uv_batch_frobenius(A, U, V, W, epsmin):
         # Update V
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
 
+        if R is not None:
+            V_new = np.where(R, V_new, 0)
+
         # Update U
         U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
-
         return (U_new, V_new), None
 
     # Run 10 iterations of updates
@@ -185,7 +216,7 @@ def update_uv_batch_frobenius(A, U, V, W, epsmin):
 
 
 @jax.jit
-def update_uv_batch_kullback_leibler(A, U, V, W, epsmin):
+def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
     """Perform 10 weighted NMF iterations for a euclidean metric.
 
     Params:
@@ -202,6 +233,9 @@ def update_uv_batch_kullback_leibler(A, U, V, W, epsmin):
     W : numpy.ndarray, values > 0 (n_features, n_samples)
         Weight matrix, weighting importance of each feature in each sample, for all samples in X
 
+    R : numpy.ndarray, bool (n_components, n_samples)
+        Activity matrix true if component is active for a sample
+
     epsmin: float
         Smallest non-zero float value.
 
@@ -213,11 +247,17 @@ def update_uv_batch_kullback_leibler(A, U, V, W, epsmin):
     V : numpy.ndarray, values > 0 (n_components, n_samples)
         V matrix
     """
+    if R is not None:
+        V = np.where(R, V, 0)
+
     def step_fn(carry, _):
         U, V = carry
 
         # Update V
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+
+        if R is not None:
+            V_new = np.where(R, V_new, 0)
 
         # Update U
         U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
@@ -238,7 +278,7 @@ def update_uv_batch_kullback_leibler(A, U, V, W, epsmin):
 
 
 @jax.jit
-def update_v_batch_frobenius(A, U, V, W, epsmin):
+def update_v_batch_frobenius(A, U, V, W, R, epsmin):
     """Perform 10 weighted NMF iterations for a Frobenius metric.
 
     Only V is updated.
@@ -257,6 +297,9 @@ def update_v_batch_frobenius(A, U, V, W, epsmin):
     W : numpy.ndarray, values > 0 (n_features, n_samples)
         Weight matrix, weighting importance of each feature in each sample, for all samples in X
 
+    R : numpy.ndarray, bool (n_components, n_samples)
+        Activity matrix true if component is active for a sample
+
     epsmin: float
         Smallest non-zero float value.
 
@@ -268,9 +311,16 @@ def update_v_batch_frobenius(A, U, V, W, epsmin):
     V : numpy.ndarray, values > 0 (n_components, n_samples)
         V matrix
     """
+    if R is not None:
+        V = np.where(R, V, 0)
+
     # Compute row-wise reconstruction error
     def step_fn(V, _):
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+
+        if R is not None:
+            V_new = np.where(R, V_new, 0)
+
         return (V_new), None
 
     # Run 10 iterations of updates
@@ -283,7 +333,7 @@ def update_v_batch_frobenius(A, U, V, W, epsmin):
 
 
 @jax.jit
-def update_v_batch_kullback_leibler(A, U, V, W, epsmin):
+def update_v_batch_kullback_leibler(A, U, V, W, R, epsmin):
     """Perform 10 weighted NMF iterations for a euclidean metric.
 
     Only V is updated.
@@ -313,8 +363,15 @@ def update_v_batch_kullback_leibler(A, U, V, W, epsmin):
     V : numpy.ndarray, values > 0 (n_components, n_samples)
         V matrix
     """
+    if R is not None:
+        V = np.where(R, V, 0)
+
     def step_fn(V, _):
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+
+        if R is not None:
+            V_new = np.where(R, V_new, 0)
+
         return V_new, None
 
     # Run 10 iterations of updates
@@ -325,6 +382,7 @@ def update_v_batch_kullback_leibler(A, U, V, W, epsmin):
 
 def iterate_UV(
     A: np.ndarray, U: np.ndarray, V: np.ndarray, W: np.ndarray,
+    R,
     epsmin: float, max_iter: int, tol: float,
     verbose: int, track_error: bool,
     calculate_reconstruction_error_func,
@@ -346,6 +404,9 @@ def iterate_UV(
 
     W : numpy.ndarray, values > 0 (n_features, n_samples)
         Weight matrix, weighting importance of each feature in each sample, for all samples in X
+
+    R : numpy.ndarray, bool (n_components, n_samples)
+        Activity matrix true if component is active for a sample
 
 
     Returns:
@@ -389,7 +450,7 @@ def iterate_UV(
             del prev_err
             prev_err = curr_err
 
-        U, V = update_uv_batch_func(A, U, V, W, epsmin)
+        U, V = update_uv_batch_func(A, U, V, W, R=R, epsmin=epsmin)
 
     # Calculate final reconstruction error
     err = calculate_reconstruction_error_func(A, U, V, W, epsmin=epsmin)
@@ -615,7 +676,7 @@ class wNMF:
                 f"Verbosity is specified with an it, 0 or 1 or 2; got '{self.verbose}', of type {type(self.verbose)}"
             )
 
-    def fit(self, X: np.ndarray, W: np.ndarray):
+    def fit(self, X: np.ndarray, W: np.ndarray, R: np.ndarray = None):
         """Fit a wNMF model.
 
         Fitting is a modified
@@ -623,7 +684,7 @@ class wNMF:
         the fitting procedure multiple times (at least 100) and take the best solution (with the lowest error), or
         alternatively to cluster multiple runs together.
 
-        The algorithim is roughly as follows:
+        The algorithm is roughly as follows:
         1) Initialize matrices U (n_features,n_components) and V(n_components,n_samples) with random entries
             scaled approximately to the mean of X divded by n_components
         2) For each iteration, successively update U, then V using the aformentioned multiplicative update steps
@@ -738,6 +799,12 @@ class wNMF:
             to be values ranging from 0 to 1, but can contain any non-negative entries.
             If you have measurement errors, set W to the inverse variance.
 
+        R : None or numpy.ndarray or coercible array-like object
+            A boolean activity matrix of dimension (n_samples, n_components),
+            which is true if a component is allowed to be active for the sample,
+            and false if a component is disallowed.
+            Intended for semi-supervised learning with sample class information.
+
         Returns
         -------
         self: object
@@ -750,9 +817,10 @@ class wNMF:
         # Try to coerce X and W to numpy arrays
         X = coerce(X, self.epsmin).T
         W = coerce(W, self.epsmin).T
+        R = None if R is None else coerce_bool(R).T
 
         # Check X and W are suitable for NMF
-        self._check_x_w(X, W)
+        self._check_x_w(X, W, R)
 
         # If passes, initialize random number generator using random_state
         rng = self.init_random_generator()
@@ -786,7 +854,7 @@ class wNMF:
                 update_uv_batch_func = update_uv_batch_kullback_leibler
 
             factorized = iterate_UV(
-                X, U, V, W,
+                X, U, V, W, R=R,
                 epsmin=self.epsmin, max_iter=self.max_iter,
                 tol=self.tol, verbose=self.verbose, track_error=self.track_error,
                 calculate_reconstruction_error_func=calculate_reconstruction_error_func,
@@ -844,7 +912,7 @@ class wNMF:
         # return entire wNMF object
         return self
 
-    def transform(self, X: np.ndarray, W: np.ndarray):
+    def transform(self, X: np.ndarray, W: np.ndarray, R: np.ndarray = None):
         """Transform with a fitted wNMF model.
 
         Same as fit(), but only update V.
@@ -859,6 +927,12 @@ class wNMF:
             to be values ranging from 0 to 1, but can contain any non-negative entries.
             If you have measurement errors, set W to the inverse variance.
 
+        R : None or numpy.ndarray or coercible array-like object
+            A boolean activity matrix of dimension (n_samples, n_components),
+            which is true if a component is allowed to be active for the sample,
+            and false if a component is disallowed.
+            Intended for semi-supervised learning with sample class information.
+
         Returns
         -------
         V: array
@@ -871,9 +945,10 @@ class wNMF:
         # Try to coerce X and W to numpy arrays
         X = coerce(X, self.epsmin).T
         W = coerce(W, self.epsmin).T
+        R = None if R is None else coerce_bool(R).T
 
         # Check X and W are suitable for NMF
-        self._check_x_w(X, W)
+        self._check_x_w(X, W, R)
 
         # If passes, initialize random number generator using random_state
         rng = self.init_random_generator()
@@ -903,7 +978,7 @@ class wNMF:
             update_uv_batch_func = update_v_batch_kullback_leibler
 
         factorized = iterate_UV(
-            X, U, V, W,
+            X, U, V, W, R=R,
             epsmin=self.epsmin, max_iter=self.max_iter,
             tol=self.tol, verbose=self.verbose, track_error=self.track_error,
             calculate_reconstruction_error_func=calculate_reconstruction_error_func,
@@ -944,7 +1019,7 @@ class wNMF:
 
         return f.coefficients_
 
-    def _check_x_w(self, X: np.ndarray, W: np.ndarray):
+    def _check_x_w(self, X: np.ndarray, W: np.ndarray, R=None):
         """Check whether supplied X and W are suitable for NMF.
 
            Conditions checked : expected values
@@ -980,6 +1055,16 @@ class wNMF:
             raise ValueError(
                 "Number of components cannot be greater than the number of samples (columns) in X"
             )
+        if R is not None:
+            n_samples = X.shape[1]
+            if not R.shape == (self.n_components, n_samples):
+                raise ValueError(
+                    "Activity matrix R must be of shape (n_samples, n_components)"
+                )
+            if R.dtype != bool:
+                raise ValueError(
+                    "Activity matrix R must be boolean"
+                )
 
     def init_random_generator(self):
         """Initialize pseudo-random number generator.
