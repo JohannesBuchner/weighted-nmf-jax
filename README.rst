@@ -19,11 +19,27 @@ or the Kullback-Leibler Divergence:
 
 wNMF was developed by SN: https://github.com/asn32/weighted-nmf.
 wNMFx is a fork which speeds up the computation with jax.
+wNMFx follows the scikit-learn conventions.
+Additional features include transform().
 
 Useful Links
 ------------
 - `Source on Github <https://github.com/JohannesBuchner/weighted-nmf-jax>`_
 - `Package on PyPI <https://pypi.org/project/wNMFx/>`_
+
+.. image:: https://img.shields.io/pypi/v/wNMFx.svg
+        :target: https://pypi.python.org/pypi/wNMFx
+
+.. image:: https://github.com/JohannesBuchner/weighted-nmf-jax/actions/workflows/tests.yml/badge.svg
+        :target: https://github.com/JohannesBuchner/weighted-nmf-jax/actions/workflows/tests.yml
+
+.. image:: https://img.shields.io/badge/docs-published-ok.svg
+        :target: https://github.com/JohannesBuchner/weighted-nmf-jax/
+        :alt: Documentation Status
+
+.. image:: https://coveralls.io/repos/github/JohannesBuchner/weighted-nmf-jax/badge.svg?branch=main
+        :target: https://coveralls.io/github/JohannesBuchner/weighted-nmf-jax?branch=main
+        :alt: Coverage
 
 Installation
 ------------
