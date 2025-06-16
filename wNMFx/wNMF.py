@@ -186,7 +186,7 @@ def update_uv_batch_frobenius(A, U, V, W, R, epsmin):
         V matrix
     """
     if R is not None:
-        V = np.where(R, V, 0)
+        V = jnp.where(R, V, 0)
 
     # Compute row-wise reconstruction error
     def step_fn(carry, _):
@@ -196,7 +196,7 @@ def update_uv_batch_frobenius(A, U, V, W, R, epsmin):
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
 
         if R is not None:
-            V_new = np.where(R, V_new, 0)
+            V_new = jnp.where(R, V_new, 0)
 
         # Update U
         U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
@@ -248,7 +248,7 @@ def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
         V matrix
     """
     if R is not None:
-        V = np.where(R, V, 0)
+        V = jnp.where(R, V, 0)
 
     def step_fn(carry, _):
         U, V = carry
@@ -257,7 +257,7 @@ def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
 
         if R is not None:
-            V_new = np.where(R, V_new, 0)
+            V_new = jnp.where(R, V_new, 0)
 
         # Update U
         U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
@@ -312,14 +312,14 @@ def update_v_batch_frobenius(A, U, V, W, R, epsmin):
         V matrix
     """
     if R is not None:
-        V = np.where(R, V, 0)
+        V = jnp.where(R, V, 0)
 
     # Compute row-wise reconstruction error
     def step_fn(V, _):
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
 
         if R is not None:
-            V_new = np.where(R, V_new, 0)
+            V_new = jnp.where(R, V_new, 0)
 
         return (V_new), None
 
@@ -364,13 +364,13 @@ def update_v_batch_kullback_leibler(A, U, V, W, R, epsmin):
         V matrix
     """
     if R is not None:
-        V = np.where(R, V, 0)
+        V = jnp.where(R, V, 0)
 
     def step_fn(V, _):
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
 
         if R is not None:
-            V_new = np.where(R, V_new, 0)
+            V_new = jnp.where(R, V_new, 0)
 
         return V_new, None
 
