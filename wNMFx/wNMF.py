@@ -436,12 +436,12 @@ def iterate_UV(
         )
     # Begin iterations until max_iter
     for i in range(0, int(np.ceil(max_iter / 10))):
-        if verbose > 1:
-            print(f"|--- iteration {i * 10}")
         if track_error or tol > 0:
             curr_err = calculate_reconstruction_error_func(
                 A, U, V, W, epsmin=epsmin
             )
+            if verbose > 1:
+                print(f"|--- iteration {i * 10}: err={curr_err:.2e}")
             if track_error:
                 err_stored[i * 10:] = curr_err
             if tol > 0 and prev_err is not None and (prev_err - curr_err) / init_err < tol:
@@ -449,6 +449,9 @@ def iterate_UV(
                 break
             del prev_err
             prev_err = curr_err
+        else:
+            if verbose > 1:
+                print(f"|--- iteration {i * 10}")
 
         U, V = update_uv_batch_func(A, U, V, W, R=R, epsmin=epsmin)
 
