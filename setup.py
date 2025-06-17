@@ -11,7 +11,7 @@ with open(readme_path, "r") as f:
 
 setuptools.setup(
     name="wNMFx",
-    version="0.5.2",
+    version="0.5.3",
     long_description=readme,
     description="wNMFx: weighted Non-Negative matrix Factorization in jax",
     long_description_content_type="text/x-rst",
