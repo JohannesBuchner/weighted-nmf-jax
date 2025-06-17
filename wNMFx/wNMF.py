@@ -195,15 +195,15 @@ def update_uv_batch_frobenius(A, U, V, W, R, epsmin):
         # Update V
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
 
-        if R is not None:
-            V_new = jnp.where(R, V_new, 0)
-
         # Update U
         U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
         return (U_new, V_new), None
 
     # Run 10 iterations of updates
     (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=10)
+
+    if R is not None:
+        V_out = jnp.where(R, V_out, 0)
 
     # Ensure strictly positive U, V to avoid division by zero
     U_out = jnp.where(U_out == 0.0, epsmin, U_out)
@@ -256,9 +256,6 @@ def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
         # Update V
         V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
 
-        if R is not None:
-            V_new = jnp.where(R, V_new, 0)
-
         # Update U
         U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
 
@@ -266,6 +263,9 @@ def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
 
     # Run 10 iterations of updates
     (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=10)
+
+    if R is not None:
+        V_out = jnp.where(R, V_out, 0)
 
     # Ensure strictly positive U, V to avoid division by zero
     U_out = jnp.where(U_out == 0.0, epsmin, U_out)
