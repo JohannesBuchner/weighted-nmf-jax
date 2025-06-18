@@ -188,15 +188,17 @@ def update_uv_batch_frobenius(A, U, V, W, R, epsmin):
     if R is not None:
         V = jnp.where(R, V, 0)
 
+    WA = W * A
+
     # Compute row-wise reconstruction error
     def step_fn(carry, _):
         U, V = carry
 
         # Update V
-        V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+        V_new = V * ((U.T @ WA) / (U.T @ (W * (U @ V))))
 
         # Update U
-        U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
+        U_new = U * ((WA @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
         return (U_new, V_new), None
 
     # Run 10 iterations of updates
@@ -250,14 +252,16 @@ def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
     if R is not None:
         V = jnp.where(R, V, 0)
 
+    WA = W * A
+
     def step_fn(carry, _):
         U, V = carry
 
         # Update V
-        V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+        V_new = V * ((U.T @ WA) / (U.T @ (W * (U @ V))))
 
         # Update U
-        U_new = U * (((W * A) @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
+        U_new = U * ((WA @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
 
         return (U_new, V_new), None
 
@@ -314,9 +318,11 @@ def update_v_batch_frobenius(A, U, V, W, R, epsmin):
     if R is not None:
         V = jnp.where(R, V, 0)
 
+    nom = U.T @ (W * A)
+
     # Compute row-wise reconstruction error
     def step_fn(V, _):
-        V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+        V_new = V * (nom / (U.T @ (W * (U @ V))))
 
         if R is not None:
             V_new = jnp.where(R, V_new, 0)
@@ -366,8 +372,10 @@ def update_v_batch_kullback_leibler(A, U, V, W, R, epsmin):
     if R is not None:
         V = jnp.where(R, V, 0)
 
+    nom = U.T @ (W * A)
+
     def step_fn(V, _):
-        V_new = V * ((U.T @ (W * A)) / (U.T @ (W * (U @ V))))
+        V_new = V * (nom / (U.T @ (W * (U @ V))))
 
         if R is not None:
             V_new = jnp.where(R, V_new, 0)
