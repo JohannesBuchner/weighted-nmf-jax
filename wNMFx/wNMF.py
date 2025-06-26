@@ -111,8 +111,56 @@ def calculate_reconstruction_error_frobenius(
     V = jnp.where(V == 0.0, epsmin, V)
 
     # select loss function and calculate error
-    rec = X - U @ V
-    return 0.5 * jnp.sum(W * rec * rec, axis=axis)
+    resid = X - U @ V
+    return 0.5 * jnp.sum(W * resid * resid, axis=axis)
+
+
+@partial(jax.jit, static_argnames=["axis"])
+def calculate_reconstruction_error_tt_frobenius(
+    X: np.ndarray,
+    U: np.ndarray,
+    V: np.ndarray,
+    W: np.ndarray,
+    add_indices: np.ndarray,
+    mul_indices: np.ndarray,
+    mulmask: np.ndarray,
+    tmul_mask: np.ndarray,
+    epsmin: float,
+    axis=None,
+):
+    """Calculate the reconstruction error of U, V to X, given W.
+
+    Params:
+    ------
+    A : numpy.ndarray, values > 0, (n_features, n_samples)
+        Data matrix to be factorized / compared to
+
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix
+
+    W : numpy.ndarray, values > 0 (n_features, n_samples)
+        Weight matrix, weighting importance of each feature in each sample, for all samples in X
+
+    Returns:
+    ------
+    err: the estimated error using the selected loss function
+    """
+    # unpack:
+    n_features, n_components = U.shape
+    n_samples = V.shape[1]
+    # Nadd = len(add_indices)
+    Nmul = len(mul_indices)
+    U, T = U[:, add_indices], U[:, mul_indices]  # (n_features, n_{add,mul}_components)
+    V, t = V[add_indices, :], V[mul_indices, :]  # (n_{add,mul}_components, n_samples)
+
+    Tt_expanded = jnp.exp(-T.reshape((n_features, Nmul, 1)) * t.reshape((1, Nmul, n_samples)))
+    reconstruction = jnp.einsum('fa,as,fms,am->fs', U, V, Tt_expanded, tmul_mask)
+
+    resid = X - reconstruction
+    return 0.5 * jnp.sum(W * resid * resid, axis=axis)
 
 
 @partial(jax.jit, static_argnames=["axis"])
@@ -154,7 +202,7 @@ def calculate_reconstruction_error_kullback_leibler(
 
 
 @jax.jit
-def update_uv_batch_frobenius(A, U, V, W, R, epsmin):
+def update_uv_batch_frobenius(A, U, V, W, R, epsmin, niter=10):
     """Perform 10 weighted NMF iterations for a Frobenius metric.
 
     Params:
@@ -202,7 +250,7 @@ def update_uv_batch_frobenius(A, U, V, W, R, epsmin):
         return (U_new, V_new), None
 
     # Run 10 iterations of updates
-    (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=10)
+    (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=niter)
 
     if R is not None:
         V_out = jnp.where(R, V_out, 0)
@@ -217,8 +265,287 @@ def update_uv_batch_frobenius(A, U, V, W, R, epsmin):
     return U_out / norms.reshape((1, -1)), V_out * norms.reshape((-1, 1))
 
 
+# apply T^t to U @ V only to t_limit
+# for example, (MW and host) galaxy attenuation applies to all additive components
+# The BLAGN components should be attenuated also
+# The NLAGN components can be attenuated, revealing the host galaxy
+# so we should have chunks by CLASS:
+#   STAR -> one attenuation
+#   QSO  -> one or more attenuations: for nuclear attenuation, for BALs, for outflows
+# BAL & host attenuation can apply to all components
+# outflow & nuclear attenuation should only apply to QSO components.
+# --> so we should put half the QSO components first, add mulmask components just after,
+# then more QSO components (for the NLR),
+# then STAR & GALAXY components, then a final attenuation component.
+# multiplicative component i applies to additive components up to j
+
+def make_matmul(mulmask):
+    Nadd = jnp.sum(~mulmask)
+    # Nmul = jnp.sum(mulmask)
+    tmul_mask = []
+    # multiplicative component i applies to additive components up to j
+    j_add = 0
+    for j, val in enumerate(mulmask):
+        if not val:
+            # found a additive component:
+            j_add += 1
+        else:
+            # this multiplicative component applies to all of the ones up to here
+            tmul_mask.append(jnp.arange(Nadd) <= j_add)
+    return jnp.where(~mulmask)[0], jnp.where(mulmask)[0], jnp.array(tmul_mask).T * 1  # Nadd, Nmul
+
+
+#@jax.jit
+def update_uvtt_batch_frobenius(A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, R, epsmin, niter=10):
+    """Perform 10 weighted NMF iterations for a Frobenius metric.
+
+    Params:
+    ------
+    A : numpy.ndarray, values > 0, (n_features, n_samples)
+        Data matrix to be factorized / compared to
+
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix
+
+    W : numpy.ndarray, values > 0 (n_features, n_samples)
+        Weight matrix, weighting importance of each feature in each sample, for all samples in X
+
+    mulmask : numpy.ndarray, bool (n_components)
+        Whether component U[:,i] should be applied in a multiplicative fashion,
+        taken to the power of V[i].
+
+    R : numpy.ndarray, bool (n_components, n_samples)
+        Activity matrix true if component is active for a sample
+
+    epsmin: float
+        Smallest non-zero float value.
+
+    Returns:
+    ------
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix
+    """
+    if R is not None:
+        V = jnp.where(R, V, 0)
+
+    # unpack:
+    # Nadd = len(add_indices)
+    Nmul = len(mul_indices)
+    n_features, n_components = U.shape
+    n_samples = V.shape[1]
+    U, T = U[:, add_indices], U[:, mul_indices]  # (n_features, n_{add,mul}_components)
+    V, t = V[add_indices, :], V[mul_indices, :]      # (n_{add,mul}_components, n_samples)
+    assert jnp.isfinite(U).all()
+    assert jnp.isfinite(V).all()
+    assert jnp.isfinite(T).all()
+    assert jnp.isfinite(t).all()
+
+    # WA = W * A  # shape: (n_features, n_samples)
+
+    # Compute row-wise reconstruction error
+    def step_fn(carry, _):
+        U, V, T, t = carry
+        assert jnp.isfinite(U).all()
+        assert jnp.isfinite(V).all()
+        assert jnp.isfinite(T).all()
+        assert jnp.isfinite(t).all()
+
+        T = jnp.clip(T, 0.0001, jnp.inf)
+        t = jnp.clip(t, 0.0001, jnp.inf)
+        # given T and t, compute effective shape U: U @ V * T^t
+        #    Tt = jnp.exp(T @ t)  # (n_features, n_samples)
+        # expand the shape of Tt to (n_features, n_mul_components, n_samples)
+        Tt_expanded = jnp.exp(-T.reshape((n_features, Nmul, 1)) * t.reshape((1, Nmul, n_samples)))
+        reconstruction = jnp.einsum('fa,as,fms,am->fs', U, V, Tt_expanded, tmulmask)
+        # print("Tt_expanded:", Tt_expanded)
+        assert jnp.isfinite(Tt_expanded).all(), (Tt_expanded, T, t)
+        if True:
+            WA = W * A / jnp.exp(-T @ t)
+            V_new = V * ((U.T @ WA) / (U.T @ (W * (U @ V))))
+            assert jnp.isfinite(V_new).all()
+            U_new = U * ((WA @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
+        elif False:
+            # Update V
+            WA = W * A
+            Ueff = jnp.einsum('fa,fms,am->fa', U, Tt_expanded, tmulmask)
+            V_new = V * ((Ueff.T @ WA) / (Ueff.T @ (W * (Ueff @ V))))
+            assert jnp.isfinite(V_new).all()
+            U_new = U * ((WA @ V_new.T) / ((W * (Ueff @ V_new)) @ V_new.T))
+        elif False:
+            WA = W * A
+            # old: UT_TtWA = U.T @ (Tt * WA): shape: (Nadd, n_samples)
+            UT_TtWA = jnp.einsum('fa,fs,fms,am->as', U, WA, Tt_expanded, tmulmask)
+            # old: UTWUVTt = U.T @ (W * (U @ V) * Tt): shape: (Nadd, n_samples)
+            UTWUVTt = jnp.einsum('fa,fs,fA,As,fms,Am->as', U, W, U, V, Tt_expanded, tmulmask)
+            V_new = V * (UT_TtWA / UTWUVTt)
+            assert jnp.isfinite(V_new).all()
+
+            # old: TtWAV = (Tt * WA) @ V_new.T: shape: (n_features, n_{add,mul}_components)
+            TtWAV = jnp.einsum('as,fs,fms,am->fa', V_new, WA, Tt_expanded, tmulmask)
+            # old: WUVTtV = (W * (U @ V_new) * Tt) @ V_new.T: shape: (Nadd, n_samples)
+            WUVTtV = jnp.einsum('fs,fA,As,fms,Am,as->fa', W, U, V_new, Tt_expanded, tmulmask, V_new)
+            U_new = U * (TtWAV / WUVTtV)
+        elif False:
+            WA = W * A
+            numerator_V = jnp.einsum('fa,fs,fms,am->as', U, W * A / reconstruction, Tt_expanded, tmulmask)
+            denominator_V = jnp.einsum('fa,fs,fms,am->as', U, W, Tt_expanded, tmulmask)
+            V_new = V * numerator_V / denominator_V
+            assert jnp.isfinite(V_new).all()
+
+            numerator_U = jnp.einsum('as,fs,fms,am->fa', V_new, W * A / reconstruction, Tt_expanded, tmulmask)
+            denominator_U = jnp.einsum('as,fs,fms,am->fa', V_new, W, Tt_expanded, tmulmask)
+            U_new = U * numerator_U / denominator_U
+        assert jnp.isfinite(U_new).all()
+
+        reconstruction_noTt = jnp.einsum('fa,as->fs', U_new, V_new)
+        reconstruction = jnp.einsum('fa,as,fms,am->fs', U_new, V_new, Tt_expanded, tmulmask)
+        W_log = W * np.log(reconstruction_noTt / reconstruction)**2
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.plot(A, color='k')
+        plt.plot(A / jnp.exp(-(T @ t)), color='gray')
+        plt.plot(reconstruction_noTt, color='purple')
+        plt.plot(reconstruction, color='r', ls='--', lw=1)
+        plt.savefig('test.pdf')
+        plt.close()
+        L = jnp.log(jnp.clip(reconstruction_noTt / A, 1.00001, jnp.inf))
+        # this ^ computes the log-ratio of data to model.
+        # the ratio may be < 1 where the model under-predicts.
+        # force L to be non-negative; we should trend Tt to be zero there
+        # L = jnp.clip(L, 0.0001, jnp.inf)
+        W_logA = W_log * L
+        plt.figure()
+        plt.plot(L, color='k')
+        #plt.plot(W_logA, color='gray', ls='--')
+        plt.plot(T @ t, color='r')
+        plt.plot(T @ (t * 0 + 1e-3), color='purple')
+        #plt.yscale('log')
+        plt.savefig('test2.pdf')
+        plt.close()
+        # now we approximate L = log(A/UV) = -Tt
+        #   which makes sense because A=UV*exp(-Tt)
+
+        assert (Tt_expanded >= 0).all()
+        assert (W_log >= 0).all()
+        assert (tmulmask >= 0).all()
+        assert (L >= 0).all()
+        # A -> L     : fs, shape: (n_features, n_samples)
+        # U -> T     : fm, shape: (n_features, Nmul)
+        # V -> t     : ms, shape: (Nmul, n_samples)
+        # W -> W_log : fs, shape: (n_features, n_samples)
+        
+        # Update t
+        # V_new = V * ((U.T @ WA) / (U.T @ (W * (U @ V))))
+        t_new_proposed = t * ((T.T @ W_logA) / (T.T @ (W_log * (T @ t))))
+        assert jnp.isfinite(t_new_proposed).all()
+        assert (t_new_proposed > 0).all()
+        t_new = t * 0.9 + t_new_proposed * 0.1
+        assert jnp.isfinite(t_new).all()
+        assert (t_new > 0).all()
+        # Update T
+        # U_new = U * ((WA @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
+        T_new_proposed = T * ((W_logA @ t_new.T) / ((W_log * (T @ t_new)) @ t_new.T))
+        T_new = T * 0.9 + T_new_proposed * 0.1
+        print("t update:", t_new / t)
+        print("t_new:", t_new)
+        print("T_new:", T_new)
+        print("Tt:", np.max(T_new @ t_new))
+
+        plt.figure()
+        plt.plot(L, color='k')
+        plt.plot(T, color='gray', ls=':')
+        plt.plot(T_new, color='gray', alpha=0.5)
+        plt.plot(T_new @ t_new, color='r')
+        plt.yscale('log')
+        plt.savefig('test3.pdf')
+        plt.close()
+        
+        # now transform to log space:
+        # old: reconstruction = (U_new @ V_new) * Tt   shape=(n_features, n_samples)
+        # reconstruction = jnp.einsum('fa,as,fms,am->fs', U_new, V_new, Tt_expanded, tmulmask)
+        #UV_new = jnp.einsum('fa,as->fs', U_new, V_new, tmulmask)
+        # probability of model: near 1 when model>data, near 0 when data>model
+        #P = UV_new / (UV_new + A)
+        # then log P / (1 - P) = log UV - log A
+        # we approximate P = Tt
+        # because if P=0 -> Tt=0 -> no attenuation needed
+        #     and if P=1 -> Tt=1 -> exp(-Tt): attenuation by e
+        
+        #UV_new_a = jnp.einsum('fa,as,am->fms', U_new, V_new, tmulmask)
+        # probability of model: high when model > data, low when data > model
+        #P_UV_a = UV_new_a / (UV_new_a + A[:, None, :])
+        # approximate this ratio with the T*t term, this is our "reconstruction"
+        #UVTt_new_a = jnp.einsum("fa,as,fms,am->fms", U_new, V_new, Tt_expanded, tmulmask)
+        #P_UVTt_new_a = UVTt_new_a / (UVTt_new_a + A[:, None, :])
+        # this is our new "data": for each multiplicative component m, we have features and samples.
+        #logratio = np.log(P_a / P_UVTt_new_a)  # because Tt_expanded <= 1, this ratio must be > 1
+        # we try to approximate "logratio"_fms with sum_m T_fm * t_ms
+
+        # update for t
+        #tnom = jnp.einsum("fs,fms,fm,fms->ms", W, ratio, Tt_expanded)
+        #tdenom = jnp.einsum("fs,fm,fm,fms->ms", W, T**2, Tt_expanded)
+        #t_new = t * (tnom / tdenom)
+        
+        #Tt_expanded = jnp.exp(-T.reshape((n_features, Nmul, 1)) * t_new.reshape((1, Nmul, n_samples)))
+        #P_hat_a = jnp.einsum("fms,am->fms", Tt_expanded, tmulmask)
+        
+        # update for T
+        #Tnom = jnp.einsum("fs,fms,fm,fms->fm", W, ratio, t_new, Tt_expanded)
+        #Tdenom = jnp.einsum("fs,fm,fm,fms->fm", W, t_new, t_new, Tt_expanded)
+        #T_new = T * (Tnom / Tdenom)
+        
+        assert jnp.isfinite(T_new).all()
+        assert (T_new > 0).all()
+
+        return (U_new, V_new, T_new, t_new), None
+
+    # Run 10 iterations of updates
+    #(U_out, V_out, T_out, t_out), _ = jax.lax.scan(step_fn, (U, V, T, t), None, length=niter)
+    U_out, V_out, T_out, t_out = (U, V, T, t)
+    for i in range(niter):
+        (U_out, V_out, T_out, t_out), _ = step_fn((U_out, V_out, T_out, t_out), None)
+
+    if R is not None:
+        V_out = jnp.where(R, V_out, 0)
+        t_out = jnp.where(R, t_out, 0)
+
+    # Ensure strictly positive U, V to avoid division by zero
+    U_out = jnp.where(U_out == 0.0, epsmin, U_out)
+    V_out = jnp.where(V_out == 0.0, epsmin, V_out)
+    T_out = jnp.where(T_out == 0.0, epsmin, T_out)
+    t_out = jnp.where(t_out == 0.0, epsmin, t_out)
+
+    # normalise the components so that the peak is 1
+    norms = U_out.max(axis=0)
+    assert norms.shape == (U_out.shape[1],)
+
+    Tnorms = T_out.max(axis=0)
+    assert Tnorms.shape == (T_out.shape[1],)
+
+    # Initialize arrays of the full shape
+    U_combined = jnp.zeros((n_features, n_components))
+    V_combined = jnp.zeros((n_components, n_samples))
+
+    # Repack using masks
+    U_combined = U_combined.at[:, add_indices].set(U_out) # / norms.reshape((1, -1)))
+    U_combined = U_combined.at[:, mul_indices].set(T_out) # / Tnorms.reshape((1, -1)))
+
+    V_combined = V_combined.at[add_indices, :].set(V_out) # * norms.reshape((-1, 1)))
+    V_combined = V_combined.at[mul_indices, :].set(t_out) # * Tnorms.reshape((-1, 1)))
+    assert jnp.isfinite(U_combined).all()
+    assert jnp.isfinite(V_combined).all()
+
+    return U_combined, V_combined
+
+
 @jax.jit
-def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
+def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin, niter=10):
     """Perform 10 weighted NMF iterations for a euclidean metric.
 
     Params:
@@ -266,7 +593,7 @@ def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
         return (U_new, V_new), None
 
     # Run 10 iterations of updates
-    (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=10)
+    (U_out, V_out), _ = jax.lax.scan(step_fn, (U, V), None, length=niter)
 
     if R is not None:
         V_out = jnp.where(R, V_out, 0)
@@ -282,7 +609,7 @@ def update_uv_batch_kullback_leibler(A, U, V, W, R, epsmin):
 
 
 @jax.jit
-def update_v_batch_frobenius(A, U, V, W, R, epsmin):
+def update_v_batch_frobenius(A, U, V, W, R, epsmin, niter=10):
     """Perform 10 weighted NMF iterations for a Frobenius metric.
 
     Only V is updated.
@@ -330,7 +657,7 @@ def update_v_batch_frobenius(A, U, V, W, R, epsmin):
         return (V_new), None
 
     # Run 10 iterations of updates
-    V_out, _ = jax.lax.scan(step_fn, V, None, length=10)
+    V_out, _ = jax.lax.scan(step_fn, V, None, length=niter)
 
     # Ensure strictly positive U, V to avoid division by zero
     V_out = jnp.where(V_out == 0.0, epsmin, V_out)
@@ -339,7 +666,7 @@ def update_v_batch_frobenius(A, U, V, W, R, epsmin):
 
 
 @jax.jit
-def update_v_batch_kullback_leibler(A, U, V, W, R, epsmin):
+def update_v_batch_kullback_leibler(A, U, V, W, R, epsmin, niter=10):
     """Perform 10 weighted NMF iterations for a euclidean metric.
 
     Only V is updated.
@@ -383,7 +710,7 @@ def update_v_batch_kullback_leibler(A, U, V, W, R, epsmin):
         return V_new, None
 
     # Run 10 iterations of updates
-    V_out, _ = jax.lax.scan(step_fn, V, None, length=10)
+    V_out, _ = jax.lax.scan(step_fn, V, None, length=niter)
     V_out = jnp.where(V_out == 0.0, epsmin, V_out)
     return U, V_out
 
@@ -394,7 +721,7 @@ def iterate_UV(
     epsmin: float, max_iter: int, tol: float,
     verbose: int, track_error: bool,
     calculate_reconstruction_error_func,
-    update_uv_batch_func
+    update_uv_batch_func, nchunkiter=10
 ):
     """Minimize the objective iteratively.
 
@@ -443,15 +770,15 @@ def iterate_UV(
             A, U, V, W, epsmin=epsmin
         )
     # Begin iterations until max_iter
-    for i in range(0, int(np.ceil(max_iter / 10))):
+    for i in range(0, int(np.ceil(max_iter / nchunkiter))):
         if track_error or tol > 0:
             curr_err = calculate_reconstruction_error_func(
                 A, U, V, W, epsmin=epsmin
             )
             if verbose > 1:
-                print(f"|--- iteration {i * 10}: err={curr_err:.2e}")
+                print(f"|--- iteration {i * nchunkiter}: err={curr_err:.2e}")
             if track_error:
-                err_stored[i * 10:] = curr_err
+                err_stored[i * nchunkiter:] = curr_err
             if tol > 0 and prev_err is not None and (prev_err - curr_err) / init_err < tol:
                 print(f'|--- Convergence reached at iteration {i}')
                 break
@@ -459,14 +786,100 @@ def iterate_UV(
             prev_err = curr_err
         else:
             if verbose > 1:
-                print(f"|--- iteration {i * 10}")
+                print(f"|--- iteration {i * nchunkiter}")
 
         U, V = update_uv_batch_func(A, U, V, W, R=R, epsmin=epsmin)
+        yield U, V, i, curr_err, err_stored
 
     # Calculate final reconstruction error
     err = calculate_reconstruction_error_func(A, U, V, W, epsmin=epsmin)
-    return U, V, i, err, err_stored
+    yield U, V, i, err, err_stored
 
+def iterate_UVTt(
+    A: np.ndarray, U: np.ndarray, V: np.ndarray, W: np.ndarray,
+    R, add_indices, mul_indices, mulmask, tmulmask,
+    epsmin: float, max_iter: int, tol: float,
+    verbose: int, track_error: bool,
+    calculate_reconstruction_error_func,
+    update_uv_batch_func, nchunkiter=10
+):
+    """Minimize the objective iteratively.
+
+    Params:
+    -------
+    A : numpy.ndarray, values > 0, (n_features, n_samples)
+        Data matrix to be factorized, referred to as X in the main code body, referred to as A here to make it easier to
+        read the update steps because the authors Blondel, Ho, Ngoc-Diep and Dooren use A.
+
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        U matrix, randomly initialized entries.
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        V matrix, randomly initialized entries.
+
+    W : numpy.ndarray, values > 0 (n_features, n_samples)
+        Weight matrix, weighting importance of each feature in each sample, for all samples in X
+
+    R : numpy.ndarray, bool (n_components, n_samples)
+        Activity matrix true if component is active for a sample
+
+
+    Returns:
+    ------
+    U : numpy.ndarray, values > 0, (n_features,n_components)
+        Optimized version of the U-matrix
+
+    V : numpy.ndarray, values > 0 (n_components, n_samples)
+        Optimized version of the V-matrix
+
+    i : int
+        The iteration at which the minimization procedure terminated
+
+    err : float
+        The final error between the reconstruction UV and the actual values of W ⊗ X
+
+    err_stored : numpy.ndarray
+        A numpy vector containing the estimated reconstruction error at each minimization step
+        if self.track_error is True, otherwise an empty array of zeroes.
+
+    """
+    err_stored = np.zeros(max_iter)
+    prev_err = None
+    curr_err = None
+    if tol > 0:
+        init_err = calculate_reconstruction_error_func(
+            A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, epsmin=epsmin
+        )
+        assert np.isfinite(init_err), (init_err, A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, epsmin)
+    # Begin iterations until max_iter
+    for i in range(0, int(np.ceil(max_iter / nchunkiter))):
+        if track_error or tol > 0:
+            curr_err = calculate_reconstruction_error_func(
+                A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, epsmin=epsmin
+            )
+            assert np.isfinite(curr_err), (curr_err, A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, epsmin)
+            if verbose > 1:
+                print(f"|--- iteration {i * nchunkiter}: err={curr_err:.2e}")
+            if track_error:
+                err_stored[i * nchunkiter:] = curr_err
+            if tol > 0 and prev_err is not None and (prev_err - curr_err) / init_err < tol:
+                print(f'|--- Convergence reached at iteration {i}')
+                break
+            del prev_err
+            prev_err = curr_err
+        else:
+            if verbose > 1:
+                print(f"|--- iteration {i * nchunkiter}")
+
+        U, V = update_uv_batch_func(A, U, V, W, R=R,
+            add_indices=add_indices, mul_indices=mul_indices, mulmask=mulmask, tmulmask=tmulmask, epsmin=epsmin)
+        assert jnp.isfinite(U).all()
+        assert jnp.isfinite(V).all()
+        yield U, V, i, curr_err, err_stored
+
+    # Calculate final reconstruction error
+    err = calculate_reconstruction_error_func(A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, epsmin=epsmin)
+    yield U, V, i, err, err_stored
 
 class wNMF:
     """Weighted Non-negative Matrix Factorization.
@@ -864,20 +1277,13 @@ class wNMF:
                 calculate_reconstruction_error_func = calculate_reconstruction_error_kullback_leibler
                 update_uv_batch_func = update_uv_batch_kullback_leibler
 
-            factorized = iterate_UV(
+            *_, factorized = iterate_UV(
                 X, U, V, W, R=R,
                 epsmin=self.epsmin, max_iter=self.max_iter,
                 tol=self.tol, verbose=self.verbose, track_error=self.track_error,
                 calculate_reconstruction_error_func=calculate_reconstruction_error_func,
                 update_uv_batch_func=update_uv_batch_func,
             )
-
-            # Rescale the columns of U (basis vectors) if needed
-            if self.rescale:
-                if self.verbose >= 1:
-                    print("|--- Rescaling U basis vectors")
-
-                factorized[0] = factorized[0] / jnp.sum(factorized[0], axis=0)
 
             # append the result and store it
             result.append(factorized)
@@ -988,7 +1394,7 @@ class wNMF:
             calculate_reconstruction_error_func = calculate_reconstruction_error_kullback_leibler
             update_uv_batch_func = update_v_batch_kullback_leibler
 
-        factorized = iterate_UV(
+        *_, factorized = iterate_UV(
             X, U, V, W, R=R,
             epsmin=self.epsmin, max_iter=self.max_iter,
             tol=self.tol, verbose=self.verbose, track_error=self.track_error,
@@ -1136,60 +1542,11 @@ class wNMF:
 
         """
         # estimate density by partitioning mean across components
-        est = np.sqrt(mean / self.n_components)
+        est = mean / self.n_components
 
         # generate entries of U/V using randn, scale by est
-        if self.init == "random":
-            U = est * random_number_generator.randn(n_features, self.n_components)
-            V = est * random_number_generator.randn(self.n_components, n_samples)
-        elif self.init == "PCA":
-            from sklearn.decomposition import PCA
-
-            pca = PCA(self.n_components)
-            V = pca.fit_transform(X.T).T
-            # any negative values? move the component up to make them zero
-            low = np.clip(pca.components_.min(axis=1, keepdims=True), None, 0)
-            U = (pca.components_ - low).T
-            norms = U.max(axis=0)
-            U /= norms
-            V *= norms.reshape((-1, 1))
-            assert np.clip(pca.components_.min(axis=1), None, 0).shape == (
-                self.n_components,
-            )
-            assert U.shape == (n_features, self.n_components), (
-                U.shape,
-                (n_features, self.n_components),
-            )
-            assert V.shape == (self.n_components, n_samples), (
-                V.shape,
-                (self.n_components, n_samples),
-            )
-        elif self.init == "logAR1":
-            phi = 0.99
-            U = random_number_generator.randn(n_features, self.n_components)
-            for i in range(n_features - 1):
-                U[i + 1] = U[i] * phi + U[i + 1]
-            U = np.exp(U)
-            U = U * (est / U.mean())
-            V = est * random_number_generator.randn(self.n_components, n_samples)
-        elif self.init == "sample":
-            while True:
-                # directly pick data samples as components
-                i = random_number_generator.choice(
-                    n_samples, size=self.n_components, replace=False
-                )
-                U = np.clip(X[:, i], 0, None)
-                mask = np.any(U > 0, axis=0)
-                assert mask.shape == (self.n_components,), (
-                    mask.shape,
-                    n_samples,
-                    n_features,
-                    self.n_components,
-                )
-                if mask.all():
-                    break
-            V = random_number_generator.randn(self.n_components, n_samples)
-        # mutate in-place absolute value
+        U = random_number_generator.uniform(size=(n_features, self.n_components))
+        V = est * random_number_generator.randn(self.n_components, n_samples)
         np.abs(U, U)
         np.abs(V, V)
 
@@ -1240,3 +1597,151 @@ class wNMF:
         np.abs(V, V)
         V[V == 0] = self.epsmin
         return jnp.array(V)
+
+class wGNMF(wNMF):
+    """Weighted Generalized Non-negative Matrix Factorization.
+    
+    Same as wNMF, but allows additive and multiplicative components.
+    """
+
+    def __repr__(self):
+        """Get string representation."""
+        return f"wGNMF model with {self.n_components} components"
+
+    def fit(self, X: np.ndarray, W: np.ndarray, R: np.ndarray = None, mulmask: np.ndarray = None):
+        """Fit a wGNMF model.
+
+        The data is::
+        
+            X.shape = (n_samples, n_features)
+            W.shape = (n_samples, n_features)
+            R.shape = (n_samples, n_components)
+
+        The model components are::
+
+            U.shape = (n_features, n_add_components)
+            V.shape = (n_add_components, n_samples)
+            T.shape = (n_features, n_mul_components)
+            t.shape = (n_mul_components, n_samples)
+        
+        The model is::
+        
+            rec = sum_fi U_fi * V_fs prod_f{j<i} T_fj^t_js
+            X_nf ~ Normal(rec, W_nf)
+
+        Fitting proceeds similarly as wNMF.fit, however:
+        In each iteration, U and V are first updated keeping T and t
+        fixed. Then, T and t are updated keeping U and V fixed.
+
+        M specifies which of the *n_components* components are the
+        multiplicative components.
+        Note that multiplicative components are applied only to 
+        preceeding additive components, so you may want them last.
+        """
+        # Set the minimal value (that masks 0's) to be the smallest
+        # step size for the data-type in matrix X.
+        self.epsmin = np.finfo(type(X[0, 0])).eps
+
+        # Try to coerce X and W to numpy arrays
+        X = coerce(X, self.epsmin).T
+        W = coerce(W, self.epsmin).T
+        R = None if R is None else coerce_bool(R).T
+        add_indices, mul_indices, tmulmask = make_matmul(mulmask)
+
+        # Check X and W are suitable for NMF
+        self._check_x_w(X, W, R)
+
+        # If passes, initialize random number generator using random_state
+        rng = self.init_random_generator()
+
+        # Extract relevant information from X
+        n_features, n_samples = X.shape
+        mean = np.mean(X)
+
+        # Initialize result storage
+        result = list()
+
+        # Begin Runs...
+        for r in range(0, self.n_run):
+            if self.verbose >= 1:
+                print(f"Beginning Run {r + 1}...")
+
+            # Generate random initializatoins of U,V using random number generator
+            if self.verbose >= 1:
+                print("|--- Initializing U,V")
+            U, V = self.initialize_u_v(rng, n_features, n_samples, mean, X)
+            
+            # make V very small in the beginning.
+            V = V.at[mul_indices, :].set(V[mul_indices, :] / (mean / self.n_components * 100))
+
+            # Factorize X into U,V given W
+            if self.verbose >= 1:
+                print("|--- Running wNMF")
+
+            if self.beta_loss == "frobenius":
+                calculate_reconstruction_error_func = calculate_reconstruction_error_tt_frobenius
+                update_uv_batch_func = update_uvtt_batch_frobenius
+            else:
+                raise NotImplementedError()
+
+            *_, factorized = iterate_UVTt(
+                X, U, V, W, R=R, add_indices=add_indices, mul_indices=mul_indices, mulmask=mulmask, tmulmask=tmulmask,
+                epsmin=self.epsmin, max_iter=self.max_iter,
+                tol=self.tol, verbose=self.verbose, track_error=self.track_error,
+                calculate_reconstruction_error_func=calculate_reconstruction_error_func,
+                update_uv_batch_func=update_uv_batch_func,
+            )
+
+            # Rescale the columns of U (basis vectors) if needed
+            if self.rescale:
+                if self.verbose >= 1:
+                    print("|--- Rescaling U basis vectors")
+
+                factorized[0] = factorized[0] / jnp.sum(factorized[0], axis=0)
+
+            # append the result and store it
+            result.append(factorized)
+
+            if self.verbose >= 1:
+                print("|--- Completed")
+
+        # transform the result from a list of tuples to a set of lists, each with multiple individual entries
+        result = list(zip(*result))
+
+        # Implementing the SKLearn model response API
+        self.U_all = result[0]
+        self.V_all = result[1]
+        self.n_iter_all = result[2]
+        self.err_all = result[3]
+
+        # if tracking errors, set variable to store tracked errors
+        if self.track_error:
+            self.error_tracker = result[4]
+
+        # setting up lists
+        self.components_all_ = self.U_all
+        self.coefficients_all_ = self.V_all
+        self.n_iter_all_ = self.n_iter_all
+        self.reconstruction_err_all_ = self.err_all
+
+        # finding best result
+        best_result = np.argmin(self.err_all)
+
+        # Index out the best result, and set variables
+        self.U = self.U_all[best_result]
+        self.components_ = self.U
+
+        self.V = self.V_all[best_result]
+        self.coefficients_ = self.V
+
+        self.n_iter = self.n_iter_all[best_result]
+        self.n_iter_ = self.n_iter
+
+        self.err = self.err_all[best_result]
+        self.reconstruction_err_ = self.err
+
+        # return entire wNMF object
+        return self
+
+    def transform(self, X: np.ndarray, W: np.ndarray, R: np.ndarray = None):
+        raise NotImplementedError
