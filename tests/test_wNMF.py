@@ -3,7 +3,7 @@ from wNMFx import wNMF
 import matplotlib.pyplot as plt
 from numpy.testing import assert_allclose
 
-from wNMFx.wNMF import calculate_reconstruction_error_frobenius, update_uv_batch_frobenius, iterate_UV
+from wNMFx.wNMF import calculate_reconstruction_error_frobenius, update_uv_batch_frobenius, iterate_UV, decorrelate_NMF_greedy
 
 def test_evolution(plot=False):
     ## An example on simulated data
@@ -70,32 +70,6 @@ def test_evolution(plot=False):
     plt.close(fig_rec)
 
 
-def greedy_decorrelate_nmf(U, V, max_iter=10, ratio_threshold=1e-3):
-    k = V.shape[0]
-    U_current = np.asarray(U)
-    V_current = np.asarray(V)
-    
-    for it in range(max_iter):
-        for j in range(k):
-            for i in range(k):
-                if i == j:
-                    continue
-                T = np.eye(k)
-                # Construct a shear transformation to remove min_vi from i using component j
-                ratio = V_current[i, :].min() / V_current[j, :].max()
-                if ratio < ratio_threshold:
-                    continue
-                T[i, j] = -ratio
-                T_inv = np.linalg.inv(T)
-                print("applying transform:", T, "inv:", T_inv)
-                U_test = U_current @ T
-                V_test = T_inv @ V_current
-                if np.all(U_test >= 0) and np.all(V_test >= 0):
-                    U_current, V_current = U_test, V_test
-
-    return U_current, V_current
-
-
 def test_random(plot=False):
     ## An example on simulated data
     n = 401
@@ -157,7 +131,7 @@ def test_random(plot=False):
         plt.close(fig_loss)
 
     if plot:
-        U_corr, V_corr = greedy_decorrelate_nmf(fit.U, fit.V, max_iter=100)
+        U_corr, V_corr = decorrelate_NMF_greedy(fit.U, fit.V, max_iter=100)
         fig_components2, ax_components2 = plt.subplots()
         ax_components2.plot(fit.U + np.arange(components)[None,:], color='gray')
         ax_components2.plot(U_corr + np.arange(components)[None,:])

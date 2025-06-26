@@ -1404,6 +1404,29 @@ class wNMF:
 
         return f.coefficients_
 
+    def inverse_transform(self, V=None):
+        """Reconstruct data from coefficients.
+
+        From the best solution U, V (or optionally, the passed coefficients),
+        reconstructs the data matrix.
+
+        Params:
+        ------
+        V : numpy.ndarray, shape (n_samples, n_components)
+            The coefficient matrix for the reduced dimension latent space.
+            Rows of V are the reduced representation of
+            each sample in X, decomposed into a linear combination of the basis vectors in U.
+            Samples in X can be 'reconstructed'
+            by multiplying U by a row of V.
+
+        Returns:
+        ------
+        X_recon : numpy.ndarray
+            The reconstructed data matrix, with dimensions (n_samples, n_features).
+        """
+        V = self.V if V is None else V
+        return self.U @ V
+
     def _check_x_w(self, X: np.ndarray, W: np.ndarray, R=None):
         """Check whether supplied X and W are suitable for NMF.
 
@@ -1728,10 +1751,6 @@ class wGNMF(wNMF):
         self.add_indices = add_indices
         self.mul_indices = mul_indices
         self.tmulmask = tmulmask
-        self.X_model = jnp.einsum(
-            'fa,as,fms,am->fs',
-            self.U[:, add_indices], self.V[add_indices, :],
-            jnp.exp(-self.U[:, mul_indices, None] * self.V[None, mul_indices, :]), tmulmask)
 
         self.n_iter = self.n_iter_all[best_result]
         self.n_iter_ = self.n_iter
@@ -1745,3 +1764,84 @@ class wGNMF(wNMF):
     def transform(self, X: np.ndarray, W: np.ndarray, R: np.ndarray = None):
         """Transform data into coefficients."""
         raise NotImplementedError
+
+    def inverse_transform(self, V=None):
+        """Reconstruct data from coefficients.
+
+        From the best solution U, V (or optionally, the passed coefficients),
+        reconstructs the data matrix.
+
+        Params:
+        ------
+        V : numpy.ndarray, shape (n_samples, n_components)
+            The coefficient matrix for the reduced dimension latent space.
+            Rows of V are the reduced representation of
+            each sample in X, decomposed into a linear combination of the basis vectors in U.
+            Samples in X can be 'reconstructed'
+            by multiplying U by a row of V.
+
+        Returns:
+        ------
+        X_recon : numpy.ndarray
+            The reconstructed data matrix, with dimensions (n_samples, n_features).
+        """
+        V = self.V if V is None else V
+        return jnp.einsum(
+            'fa,as,fms,am->fs',
+            self.U[:, self.add_indices], self.V[self.add_indices, :],
+            jnp.exp(-self.U[:, self.mul_indices, None] * self.V[None, self.mul_indices, :]),
+            self.tmulmask)
+
+
+def decorrelate_NMF_greedy(U, V, max_iter=10, ratio_threshold=1e-3):
+    """Change the basis vectors to decorrelate amplitudes.
+
+    This iterates through all combinations of vectors, and applies
+    a shear transform T. The shear transform shuffles values from
+    one component to another, adjusting both U and V, so that
+    the lowest V value of parameter i is zero.
+
+    Params:
+    ------
+    U : numpy.ndarray, shape (n_features, n_components)
+        The basis matrix for the reduced dimension latent space. Columns of U are basis vectors that can be
+        added with different weights to yield a sample from X (columns).
+
+    V : numpy.ndarray, shape (n_components, n_samples)
+        The coefficient matrix for the reduced dimension latent space. Columns of V are the reduced representation of
+        each sample in X, decomposed into a linear combination of the basis vectors in U. Samples in X can be 'reconstructed'
+        by multiplying a column of U by V.
+
+    max_iter: int
+        number of iterations to perform
+
+    ratio_threshold: float
+        skip combination if the ratio of largest V[i] to smallest V[j]
+        is smaller than this threshold.
+
+    Returns:
+    ------
+    X_recon : numpy.ndarray
+        The reconstructed data matrix, with dimensions (n_samples, n_features).
+    """
+    k = V.shape[0]
+    U_current = np.asarray(U)
+    V_current = np.asarray(V)
+
+    for _ in range(max_iter):
+        for j in range(k):
+            for i in range(j):
+                T = np.eye(k)
+                # Construct a shear transformation to remove min_vi from i using component j
+                ratio = V_current[i, :].min() / V_current[j, :].max()
+                if ratio < ratio_threshold:
+                    continue
+                T[i, j] = -ratio
+                T_inv = np.linalg.inv(T)
+                print("applying transform:", T, "inv:", T_inv)
+                U_test = U_current @ T
+                V_test = T_inv @ V_current
+                if np.all(U_test >= 0) and np.all(V_test >= 0):
+                    U_current, V_current = U_test, V_test
+
+    return U_current, V_current

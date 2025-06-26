@@ -18,7 +18,7 @@ def test_random(plot=False):
     absorber = np.sin(x)**2
     
     X = []
-    for i in np.logspace(-2, -1, 21):
+    for i in np.logspace(-3, -1, 21):
         ampl = np.random.uniform(98, 100)
         mod_shape = true_shape * absorber**i
         if plot:
@@ -45,7 +45,7 @@ def test_random(plot=False):
     model = wGNMF(
         n_components=components, beta_loss='frobenius', 
         max_iter=max_iter, track_error=True, verbose=2, init=init, 
-        n_run=n_run, tol=1e-10)
+        n_run=n_run, tol=1e-5)
     fit = model.fit(X=X, W=W, mulmask=mulmask)
     print(fit.V.shape)
     print(fit.U.shape)
