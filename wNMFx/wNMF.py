@@ -406,10 +406,6 @@ def update_uvtt_batch_frobenius(
     # Run 10 iterations of updates
     (U_out, V_out, T_out, t_out), _ = jax.lax.scan(step_fn, (U, V, T, t), None, length=niter)
 
-    if R is not None:
-        V_out = jnp.where(R, V_out, 0)
-        t_out = jnp.where(R, t_out, 0)
-
     # Ensure strictly positive U, V to avoid division by zero
     U_out = jnp.where(U_out == 0.0, epsmin, U_out)
     V_out = jnp.where(V_out == 0.0, epsmin, V_out)
@@ -433,6 +429,9 @@ def update_uvtt_batch_frobenius(
 
     V_combined = V_combined.at[add_indices, :].set(V_out * norms.reshape((-1, 1)))
     V_combined = V_combined.at[mul_indices, :].set(t_out * Tnorms.reshape((-1, 1)))
+
+    if R is not None:
+        V_combined = jnp.where(R, V_combined, 0)
 
     return U_combined, V_combined
 
