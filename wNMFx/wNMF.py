@@ -397,9 +397,11 @@ def update_uvtt_batch_frobenius(
         # V_new = V * ((U.T @ WA) / (U.T @ (W * (U @ V))))
         t_new_proposed = t * ((T.T @ W_logA) / (T.T @ (W_log * (T @ t))))
         t_new = t * (1 - mul_factor) + t_new_proposed * mul_factor
+        t_new = jnp.where(jnp.isfinite(t_new), t_new, t)
         # Update T
         T_new_proposed = T * ((W_logA @ t_new.T) / ((W_log * (T @ t_new)) @ t_new.T))
         T_new = T * (1 - mul_factor) + T_new_proposed * mul_factor
+        T_new = jnp.where(jnp.isfinite(T_new), T_new, T)
 
         return (U_new, V_new, T_new, t_new), None
 
@@ -703,6 +705,8 @@ def iterate_UV(
             curr_err = calculate_reconstruction_error_func(
                 A, U, V, W, epsmin=epsmin
             )
+            if tol > 0 and curr_err > init_err:
+                init_err = curr_err
             if verbose > 1:
                 print(f"|--- iteration {i * nchunkiter}: err={curr_err:.2e}")
             if track_error:
@@ -820,6 +824,8 @@ def iterate_UVTt(
             curr_err = calculate_reconstruction_error_func(
                 A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, epsmin=epsmin
             )
+            if tol > 0 and curr_err > init_err:
+                init_err = curr_err
             assert np.isfinite(curr_err), (curr_err, A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, epsmin)
             if verbose > 1:
                 print(f"|--- iteration {i * nchunkiter}: err={curr_err:.2e}")
