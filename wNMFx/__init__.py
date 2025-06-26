@@ -2,4 +2,4 @@
 
 __version__ = '0.5.4'
 
-from .wNMF import wNMF, wGNMF
+from .wNMF import wGNMF, wNMF
