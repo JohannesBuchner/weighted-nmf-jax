@@ -307,7 +307,7 @@ def unpack_mulmask(mulmask):
 @jax.jit
 def update_uvtt_batch_frobenius(
     A, U, V, W, add_indices, mul_indices, mulmask, tmulmask, R, epsmin,
-    mul_factor, niter=10
+    mul_factor, niter=10, snr_threshold=0,
 ):
     """Perform 10 weighted NMF iterations for a Frobenius metric.
 
@@ -344,6 +344,10 @@ def update_uvtt_batch_frobenius(
     niter: int
         Number of iterations to perform in this batch.
 
+    snr_threshold: float
+        signal to noise ratio for multiplicative components. Only data
+        points where W * A > snr_threshold**2 are used.
+
     Returns:
     ------
     U : numpy.ndarray, values > 0, (n_features,n_components)
@@ -362,26 +366,27 @@ def update_uvtt_batch_frobenius(
     U, T = U[:, add_indices], U[:, mul_indices]  # (n_features, n_{add,mul}_components)
     V, t = V[add_indices, :], V[mul_indices, :]  # (n_{add,mul}_components, n_samples)
 
-    # WA = W * A  # shape: (n_features, n_samples)
+    snr_mask = A**2 * W >= snr_threshold**2
+    WA = W * A  # shape: (n_features, n_samples)
 
     # Compute row-wise reconstruction error
     def step_fn(carry, _):
         U, V, T, t = carry
-        T = jnp.clip(T, 0.0001, jnp.inf)
-        t = jnp.clip(t, 0.0001, jnp.inf)
+        T = jnp.clip(T, epsmin, jnp.inf)
+        t = jnp.clip(t, epsmin, jnp.inf)
         # given T and t, compute effective shape U: U @ V * T^t
         #    Tt = jnp.exp(T @ t)  # (n_features, n_samples)
         # expand the shape of Tt to (n_features, n_mul_components, n_samples)
-        Tt_expanded = jnp.exp(-T.reshape((n_features, Nmul, 1)) * t.reshape((1, Nmul, n_samples)))
+        Tt_expanded = jnp.clip(jnp.exp(-T.reshape((n_features, Nmul, 1)) * t.reshape((1, Nmul, n_samples))), 0.000001, jnp.inf)
         reconstruction = jnp.einsum('fa,as,fms,am->fs', U, V, Tt_expanded, tmulmask)
 
-        WA = W * A / jnp.exp(-T @ t)
-        V_new = V * ((U.T @ WA) / (U.T @ (W * (U @ V))))
-        U_new = U * ((WA @ V_new.T) / ((W * (U @ V_new)) @ V_new.T))
+        V_new = V * ((U.T @ WA) / (U.T @ (W * reconstruction)))
+        reconstruction = jnp.einsum('fa,as,fms,am->fs', U, V_new, Tt_expanded, tmulmask)
+        U_new = U * ((WA @ V_new.T) / ((W * reconstruction) @ V_new.T))
 
         reconstruction_noTt = jnp.einsum('fa,as->fs', U_new, V_new)
-        W_log = W * jnp.log(reconstruction_noTt / reconstruction)**2
-        L = jnp.log(jnp.clip(reconstruction_noTt / A, 1.00001, jnp.inf))
+        W_log = W * (jnp.log(jnp.clip(reconstruction_noTt, epsmin, jnp.inf)) - jnp.log(jnp.clip(reconstruction, epsmin, jnp.inf)))**2
+        L = jnp.where(snr_mask, jnp.log(jnp.clip(reconstruction_noTt / A, 1.000001, 100)), 0)
         # this ^ computes the log-ratio of data to model.
         # the ratio may be < 1 where the model under-predicts.
         # force L to be non-negative; we should trend Tt to be zero there
